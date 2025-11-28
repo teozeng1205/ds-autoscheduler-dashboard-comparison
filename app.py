@@ -94,6 +94,12 @@ _DATASET_LOCK = Lock()
 _cached_dataset = None
 _cached_ids = None
 
+# Prevent concurrent load actions (e.g., when the user clicks rapidly).
+_LOAD_ACTION_LOCK = Lock()
+
+# Shared message for when there are no auto schedule ids in the source table.
+_NO_AUTO_SCHEDULE_MSG = "No auto_schedule_id values found in as_hourly_collection_plans"
+
 
 def _load_dataset_with_retry(auto_schedule_ids: list[int], start_date: int | None, end_date: int | None, force_refresh: bool = False):
     """Load dataset with connection retry logic."""
@@ -336,6 +342,7 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
 
     force_refresh = triggered_id == 'refresh-btn'
 
+    lock_acquired = False
     try:
         # Validate num_ids
         if num_ids is None or num_ids < 1:
@@ -396,6 +403,11 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
                     datetime.now().isoformat()
                 )
 
+        lock_acquired = _LOAD_ACTION_LOCK.acquire(blocking=False)
+        if not lock_acquired:
+            log.info("Load already in progress; ignoring extra click.")
+            raise PreventUpdate
+
         # Get the auto_schedule_ids
         reader = _get_scheduled_reader()
         auto_schedule_ids = get_auto_schedule_ids(reader, limit=num_ids)
@@ -430,8 +442,12 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
             datetime.now().isoformat()
         )
 
+    except PreventUpdate:
+        raise
     except Exception as exc:
         error_msg = str(exc)
+        if _NO_AUTO_SCHEDULE_MSG in error_msg:
+            _reset_readers()
         log.error("Error loading data: %s", error_msg)
         return (
             no_update,
@@ -440,6 +456,9 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
             True,
             datetime.now().isoformat()
         )
+    finally:
+        if lock_acquired:
+            _LOAD_ACTION_LOCK.release()
 
 
 @app.callback(
