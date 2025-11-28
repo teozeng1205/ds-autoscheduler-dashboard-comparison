@@ -157,9 +157,9 @@ app.layout = dbc.Container([
                     type='number',
                     value=2,
                     min=1,
-                    max=10,
                     step=1,
-                    className="form-control"
+                    className="form-control",
+                    placeholder="Number of schedule IDs"
                 ),
             ], size="sm", className="me-2"),
         ], width="auto"),
