@@ -259,6 +259,21 @@ app.layout = dbc.Container([
                         ]),
 
                         html.Div([
+                            html.Label("Show Source Types", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.Checklist(
+                                id='filter-source-type',
+                                options=[
+                                    {'label': 'Scheduled & Actual', 'value': 'Scheduled & Actual'},
+                                    {'label': 'Scheduled Only', 'value': 'Scheduled Only'},
+                                    {'label': 'Actual Only', 'value': 'Actual Only'},
+                                ],
+                                value=['Scheduled & Actual', 'Scheduled Only', 'Actual Only'],
+                                labelStyle={'display': 'block', 'fontSize': '0.75rem', 'marginBottom': '0.2rem'},
+                                inputStyle={'marginRight': '0.5rem'}
+                            ),
+                        ]),
+
+                        html.Div([
                             html.Label("Color By", className="mb-1", style={'fontSize': '0.85rem'}),
                             dcc.Dropdown(
                                 id='color-field-dropdown',
@@ -533,10 +548,11 @@ def loading_state(load_clicks, refresh_clicks, load_complete):
      Input('filter-provider', 'value'),
      Input('filter-site', 'value'),
      Input('filter-auto-schedule-id', 'value'),
+     Input('filter-source-type', 'value'),
      Input('filter-date-range', 'start_date'),
      Input('filter-date-range', 'end_date')]
 )
-def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_filter, start_date, end_date):
+def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_filter, source_filter, start_date, end_date):
     """Update the Gantt chart when data or filters change."""
     if not dataset_data or 'auto_schedule_ids' not in dataset_data:
         raise PreventUpdate
@@ -551,15 +567,6 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         if _cached_ids != cache_key or _cached_dataset is None:
             raise PreventUpdate
         df = _cached_dataset.copy()
-
-    # Apply date range filter
-    def _parse_sales_date(value):
-        if value is None:
-            return None
-        try:
-            return pd.to_datetime(str(value), format='%Y%m%d', errors='coerce')
-        except (TypeError, ValueError):
-            return None
 
     # Apply filters
     if provider_filter and 'all' not in provider_filter:
@@ -579,6 +586,16 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
             df = df[df['auto_schedule_id'].isin(id_filter)]
         else:
             df = df[df['auto_schedule_id'] == id_filter]
+
+    valid_sources = {'Scheduled & Actual', 'Scheduled Only', 'Actual Only'}
+    if source_filter:
+        if isinstance(source_filter, str):
+            selected = [source_filter]
+        else:
+            selected = list(source_filter)
+        selected = [value for value in selected if value in valid_sources]
+        if selected:
+            df = df[df['source_type'].isin(selected)]
 
     # Build the Gantt figure
     fig = build_gantt_figure(df, color_field=color_field or 'source_type')
