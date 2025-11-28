@@ -123,26 +123,30 @@ class ActualSentDataReader(redshift_connector.RedshiftConnector):
         """Return the credential properties filename for ThreeVictors."""
         return "database-analytics-redshift-serverless-reader.properties"
 
-    def fetch_actual_sent_data(self, sales_date: int) -> pd.DataFrame:
+    def fetch_actual_sent_data(self, start_date: int, end_date: int | None = None) -> pd.DataFrame:
         """
         Fetch actual sent data from provider_combined_audit table.
 
         Args:
-            sales_date: Sales date in YYYYMMDD format (e.g., 20251127)
+            start_date: Start sales date in YYYYMMDD format (e.g., 20251127)
+            end_date: End sales date in YYYYMMDD format (optional, defaults to start_date)
 
         Returns:
             DataFrame with columns: providercode, sitecode, scheduledate, scheduletime, requests
         """
+        if end_date is None:
+            end_date = start_date
+
         query = """
             SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
             FROM prod.monitoring.provider_combined_audit
-            WHERE sales_date = %s
+            WHERE sales_date BETWEEN %s AND %s
             GROUP BY 1, 2, 3, 4
         """
 
         try:
             with self.get_connection().cursor() as cursor:
-                cursor.execute(query, (sales_date,))
+                cursor.execute(query, (start_date, end_date))
                 colnames = [desc[0] for desc in cursor.description]
                 records = cursor.fetchall()
         except Exception as e:
@@ -150,7 +154,7 @@ class ActualSentDataReader(redshift_connector.RedshiftConnector):
             raise
 
         df = pd.DataFrame(records, columns=colnames)
-        log.info("Fetched %s rows for sales_date %s", len(df), sales_date)
+        log.info("Fetched %s rows for sales_date range %s to %s", len(df), start_date, end_date)
         return df
 
 

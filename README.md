@@ -44,7 +44,7 @@ The comparison helps identify differences between planned and actual provider fi
   ```sql
   SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
   FROM prod.monitoring.provider_combined_audit
-  WHERE sales_date = <YYYYMMDD>
+  WHERE sales_date BETWEEN <START_DATE> AND <END_DATE>
   GROUP BY 1, 2, 3, 4
   ```
 
@@ -59,8 +59,11 @@ The dashboard will be available at: http://127.0.0.1:8051/
 ## Usage
 
 1. **Set Number of Schedule IDs**: Choose how many recent auto_schedule_ids to load (1-10)
-2. **Enter Sales Date**: Input the sales date in YYYYMMDD format (e.g., 20251127) to load actual sent data for comparison
-   - If no sales date is provided, only scheduled data will be shown
+2. **Enter Sales Date Range**:
+   - **Start Date**: Input the start sales date in YYYYMMDD format (e.g., 20251127)
+   - **End Date** (optional): Input the end sales date in YYYYMMDD format
+     - If end date is omitted, only the start date will be used
+     - If no dates are provided, only scheduled data will be shown
 3. **Load Data**: Click "Load Data" to fetch both scheduled and actual data
 4. **Refresh**: Click "Refresh" to reload from the database (bypassing cache)
 5. **Select Color Metric**: Choose which comparison metric to visualize in the Gantt chart

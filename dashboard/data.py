@@ -180,13 +180,15 @@ class ComparisonDataLoader:
         scheduled_reader: HourlyCollectionPlansReader | None = None,
         actual_reader: ActualSentDataReader | None = None,
         auto_schedule_ids: Optional[List[int]] = None,
-        sales_date: Optional[int] = None,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
         num_ids: int = 2
     ):
         self.scheduled_reader = scheduled_reader or HourlyCollectionPlansReader()
         self.actual_reader = actual_reader or ActualSentDataReader()
         self.auto_schedule_ids = auto_schedule_ids
-        self.sales_date = sales_date
+        self.start_date = start_date
+        self.end_date = end_date
         self.num_ids = num_ids
         self._dataset: pd.DataFrame | None = None
         self._loaded_from_csv = False
@@ -224,15 +226,16 @@ class ComparisonDataLoader:
         # Process scheduled data
         scheduled_df = self._process_scheduled_data(scheduled_df)
 
-        # Fetch actual sent data if sales_date is provided
-        if self.sales_date:
-            actual_df = self.actual_reader.fetch_actual_sent_data(self.sales_date)
+        # Fetch actual sent data if start_date is provided
+        if self.start_date:
+            actual_df = self.actual_reader.fetch_actual_sent_data(self.start_date, self.end_date)
             if not actual_df.empty:
                 actual_df = self._process_actual_data(actual_df)
                 # Merge with scheduled data
                 comparison_df = self._merge_scheduled_and_actual(scheduled_df, actual_df)
             else:
-                log.warning("No actual sent data found for sales_date %s", self.sales_date)
+                date_range_str = f"{self.start_date}" if self.start_date == self.end_date else f"{self.start_date} to {self.end_date}"
+                log.warning("No actual sent data found for sales_date range %s", date_range_str)
                 essential_cols = [
                     'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
                     'plan_datetime', 'label', 'total_capacity', 'sending'

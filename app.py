@@ -85,23 +85,23 @@ _cached_dataset = None
 _cached_ids = None
 
 
-def _load_dataset_with_retry(auto_schedule_ids: list[int], sales_date: int | None, force_refresh: bool = False):
+def _load_dataset_with_retry(auto_schedule_ids: list[int], start_date: int | None, end_date: int | None, force_refresh: bool = False):
     """Load dataset with connection retry logic."""
     try:
-        return _load_dataset(auto_schedule_ids, sales_date, force_refresh)
+        return _load_dataset(auto_schedule_ids, start_date, end_date, force_refresh)
     except Exception as exc:
         if not _is_connection_error(exc):
             raise
         log.warning("Connection error; refreshing readers and retrying.")
         _reset_readers()
-        return _load_dataset(auto_schedule_ids, sales_date, force_refresh)
+        return _load_dataset(auto_schedule_ids, start_date, end_date, force_refresh)
 
 
-def _load_dataset(auto_schedule_ids: list[int], sales_date: int | None, force_refresh: bool = False):
+def _load_dataset(auto_schedule_ids: list[int], start_date: int | None, end_date: int | None, force_refresh: bool = False):
     """Load the comparison dataset."""
     global _cached_dataset, _cached_ids
 
-    cache_key = (tuple(auto_schedule_ids), sales_date)
+    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
 
     with _DATASET_LOCK:
         if not force_refresh and _cached_ids == cache_key and _cached_dataset is not None:
@@ -112,7 +112,8 @@ def _load_dataset(auto_schedule_ids: list[int], sales_date: int | None, force_re
             scheduled_reader=_get_scheduled_reader(),
             actual_reader=_get_actual_reader(),
             auto_schedule_ids=auto_schedule_ids,
-            sales_date=sales_date
+            start_date=start_date,
+            end_date=end_date
         )
         df = loader.load(force_refresh=force_refresh)
         _cached_dataset = df.copy()
@@ -154,11 +155,22 @@ app.layout = dbc.Container([
         ], width="auto"),
         dbc.Col([
             dbc.InputGroup([
-                dbc.InputGroupText("Sales Date:"),
+                dbc.InputGroupText("Start Date:"),
                 dbc.Input(
-                    id='sales-date-input',
+                    id='start-date-input',
                     type='number',
                     placeholder='YYYYMMDD (e.g., 20251127)',
+                    className="form-control"
+                ),
+            ], size="sm", className="me-2"),
+        ], width="auto"),
+        dbc.Col([
+            dbc.InputGroup([
+                dbc.InputGroupText("End Date:"),
+                dbc.Input(
+                    id='end-date-input',
+                    type='number',
+                    placeholder='YYYYMMDD (optional)',
                     className="form-control"
                 ),
             ], size="sm", className="me-2"),
@@ -283,9 +295,10 @@ app.layout = dbc.Container([
     [Input('load-btn', 'n_clicks'),
      Input('refresh-btn', 'n_clicks')],
     [State('num-ids-input', 'value'),
-     State('sales-date-input', 'value')]
+     State('start-date-input', 'value'),
+     State('end-date-input', 'value')]
 )
-def load_data(load_clicks, refresh_clicks, num_ids, sales_date):
+def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
     """Load or refresh the comparison dataset."""
     ctx = callback_context
     if not ctx.triggered:
@@ -302,16 +315,18 @@ def load_data(load_clicks, refresh_clicks, num_ids, sales_date):
         if num_ids is None or num_ids < 1:
             num_ids = 2
 
-        # Validate sales_date (optional)
-        sales_date_int = None
-        if sales_date:
+        # Validate start_date and end_date (optional)
+        start_date_int = None
+        end_date_int = None
+
+        if start_date:
             try:
-                sales_date_int = int(sales_date)
+                start_date_int = int(start_date)
                 # Basic validation: YYYYMMDD format
-                if sales_date_int < 20000101 or sales_date_int > 21000101:
+                if start_date_int < 20000101 or start_date_int > 21000101:
                     return (
                         no_update,
-                        "Invalid sales_date format. Please use YYYYMMDD (e.g., 20251127)",
+                        "Invalid start_date format. Please use YYYYMMDD (e.g., 20251127)",
                         'warning',
                         True,
                         datetime.now().isoformat()
@@ -319,7 +334,37 @@ def load_data(load_clicks, refresh_clicks, num_ids, sales_date):
             except ValueError:
                 return (
                     no_update,
-                    "Invalid sales_date. Please enter a number in YYYYMMDD format",
+                    "Invalid start_date. Please enter a number in YYYYMMDD format",
+                    'warning',
+                    True,
+                    datetime.now().isoformat()
+                )
+
+        if end_date:
+            try:
+                end_date_int = int(end_date)
+                # Basic validation: YYYYMMDD format
+                if end_date_int < 20000101 or end_date_int > 21000101:
+                    return (
+                        no_update,
+                        "Invalid end_date format. Please use YYYYMMDD (e.g., 20251127)",
+                        'warning',
+                        True,
+                        datetime.now().isoformat()
+                    )
+                # Validate date range
+                if start_date_int and end_date_int < start_date_int:
+                    return (
+                        no_update,
+                        "End date must be greater than or equal to start date",
+                        'warning',
+                        True,
+                        datetime.now().isoformat()
+                    )
+            except ValueError:
+                return (
+                    no_update,
+                    "Invalid end_date. Please enter a number in YYYYMMDD format",
                     'warning',
                     True,
                     datetime.now().isoformat()
@@ -339,17 +384,20 @@ def load_data(load_clicks, refresh_clicks, num_ids, sales_date):
             )
 
         # Load the comparison dataset
-        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, sales_date_int, force_refresh)
+        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, start_date_int, end_date_int, force_refresh)
 
         record_count = len(df)
         message = f"Loaded {record_count:,} records for auto_schedule_ids: {', '.join(str(id) for id in auto_schedule_ids)}"
-        if sales_date_int:
-            message += f" | Sales Date: {sales_date_int}"
+        if start_date_int:
+            if end_date_int and end_date_int != start_date_int:
+                message += f" | Sales Date Range: {start_date_int} - {end_date_int}"
+            else:
+                message += f" | Sales Date: {start_date_int}"
         if loaded_from_cache:
             message += " (from cache)"
 
         return (
-            {'auto_schedule_ids': auto_schedule_ids, 'sales_date': sales_date_int, 'loaded_at': datetime.now().isoformat()},
+            {'auto_schedule_ids': auto_schedule_ids, 'start_date': start_date_int, 'end_date': end_date_int, 'loaded_at': datetime.now().isoformat()},
             message,
             'success',
             True,
@@ -415,8 +463,9 @@ def update_filter_options(dataset_data):
         return [[{'label': 'All', 'value': 'all'}]] * 3
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    sales_date = dataset_data.get('sales_date')
-    cache_key = (tuple(auto_schedule_ids), sales_date)
+    start_date = dataset_data.get('start_date')
+    end_date = dataset_data.get('end_date')
+    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
@@ -482,8 +531,9 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         raise PreventUpdate
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    sales_date = dataset_data.get('sales_date')
-    cache_key = (tuple(auto_schedule_ids), sales_date)
+    start_date = dataset_data.get('start_date')
+    end_date = dataset_data.get('end_date')
+    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
