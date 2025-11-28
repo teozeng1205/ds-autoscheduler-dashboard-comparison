@@ -226,9 +226,24 @@ class ComparisonDataLoader:
         # Process scheduled data
         scheduled_df = self._process_scheduled_data(scheduled_df)
 
-        # Fetch actual sent data if start_date is provided
-        if self.start_date:
-            actual_df = self.actual_reader.fetch_actual_sent_data(self.start_date, self.end_date)
+        # Determine actual data query range. Use user-provided dates if available,
+        # otherwise infer from scheduled plan dates to align with the plan timeline.
+        actual_start_date = self.start_date
+        actual_end_date = self.end_date
+        plan_dates = scheduled_df['plan_date'].dropna()
+        if not plan_dates.empty:
+            inferred_start = int(plan_dates.min())
+            inferred_end = int(plan_dates.max())
+            if actual_start_date is None:
+                actual_start_date = inferred_start
+                log.info("Defaulting actual data start_date to plan_date min %s", actual_start_date)
+            if actual_end_date is None:
+                actual_end_date = inferred_end
+                log.info("Defaulting actual data end_date to plan_date max %s", actual_end_date)
+
+        # Fetch actual sent data if we have a query range
+        if actual_start_date is not None:
+            actual_df = self.actual_reader.fetch_actual_sent_data(actual_start_date, actual_end_date or actual_start_date)
             if not actual_df.empty:
                 actual_df = self._process_actual_data(actual_df)
                 # Merge with scheduled data
@@ -241,6 +256,7 @@ class ComparisonDataLoader:
                     'plan_datetime', 'label', 'total_capacity', 'sending'
                 ]
                 comparison_df = scheduled_df[essential_cols].copy()
+                comparison_df['source_type'] = 'Scheduled Only'
                 comparison_df['actual_requests'] = 0
                 comparison_df['difference'] = -comparison_df['sending']
                 comparison_df['difference_pct'] = -100.0
@@ -251,6 +267,7 @@ class ComparisonDataLoader:
                 'plan_datetime', 'label', 'total_capacity', 'sending'
             ]
             comparison_df = scheduled_df[essential_cols].copy()
+            comparison_df['source_type'] = 'Scheduled Only'
             comparison_df['actual_requests'] = 0
             comparison_df['difference'] = -comparison_df['sending']  # All scheduled, none sent
             comparison_df['difference_pct'] = -100.0
@@ -381,23 +398,61 @@ class ComparisonDataLoader:
             how='left'
         )
 
-        log.info("After merge: %s records, actual_requests sum: %s", len(comparison_df), comparison_df['actual_requests'].sum())
+        log.info("After merge: %s records (scheduled), actual_requests sum: %s", len(comparison_df), comparison_df['actual_requests'].sum())
 
-        # Fill missing actual_requests with 0
         comparison_df['actual_requests'] = comparison_df['actual_requests'].fillna(0)
+        comparison_df['source_type'] = 'Scheduled Only'
 
-        # Drop the redundant actual_datetime column
+        # Build actual-only rows (audit entries without matching scheduled plan)
+        scheduled_keys = {
+            (row.provider_code, row.site_code, row.plan_datetime)
+            for row in scheduled_essential.itertuples(index=False)
+            if pd.notna(row.plan_datetime)
+        }
+        actual_only_mask = [
+            (row.provider_code, row.site_code, row.actual_datetime) not in scheduled_keys
+            for row in actual_agg.itertuples(index=False)
+        ]
+        actual_only_df = actual_agg.loc[actual_only_mask].copy()
+        if not actual_only_df.empty:
+            log.info("Adding %s actual-only rows to comparison dataset", len(actual_only_df))
+            actual_only_df['auto_schedule_id'] = pd.NA
+            actual_only_df['plan_datetime'] = actual_only_df['actual_datetime']
+            actual_only_df['plan_date'] = pd.to_numeric(
+                actual_only_df['plan_datetime'].dt.strftime('%Y%m%d'),
+                errors='coerce'
+            ).astype('Int64')
+            actual_only_df['plan_hour'] = actual_only_df['plan_datetime'].dt.hour.astype('Int64')
+            actual_only_df['label'] = (
+                actual_only_df['provider_code'].astype(str) + ' | ' +
+                actual_only_df['site_code'].astype(str) + ' (Actual Only)'
+            )
+            for col in ['total_capacity', 'sending']:
+                actual_only_df[col] = 0
+            actual_only_df['source_type'] = 'Actual Only'
+            comparison_df = pd.concat(
+                [comparison_df, actual_only_df[[
+                    'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
+                    'plan_datetime', 'label', 'total_capacity', 'sending',
+                    'actual_requests', 'source_type'
+                ]]],
+                ignore_index=True,
+                sort=False
+            )
+
         if 'actual_datetime' in comparison_df.columns:
             comparison_df = comparison_df.drop(columns=['actual_datetime'])
 
-        # Calculate difference (actual - scheduled)
-        # Positive means we sent more than planned, negative means we sent less
         comparison_df['difference'] = comparison_df['actual_requests'] - comparison_df['sending']
-
-        # Calculate difference percentage
         comparison_df['difference_pct'] = (
             100.0 * comparison_df['difference'] / comparison_df['sending'].replace(0, pd.NA)
-        ).fillna(0)
+        )
+        zero_sending_mask = (comparison_df['sending'] == 0) & (comparison_df['actual_requests'] > 0)
+        comparison_df.loc[zero_sending_mask, 'difference_pct'] = 100.0
+        comparison_df['difference_pct'] = comparison_df['difference_pct'].fillna(0)
+
+        scheduled_and_actual_mask = (comparison_df['sending'] > 0) & (comparison_df['actual_requests'] > 0)
+        comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Scheduled & Actual'
 
         log.info("Created comparison dataset with %s records", len(comparison_df))
         return comparison_df

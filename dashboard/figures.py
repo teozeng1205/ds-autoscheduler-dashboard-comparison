@@ -68,11 +68,14 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     # Create end datetime (1 hour after start)
     plot_df['end_datetime'] = plot_df['plan_datetime'] + pd.Timedelta(hours=1)
 
-    # Ensure color field exists and is numeric
+    # Ensure color field exists
     if color_field not in plot_df.columns:
         color_field = 'allocated_capacity'
 
-    plot_df[color_field] = pd.to_numeric(plot_df[color_field], errors='coerce').fillna(0)
+    if color_field == 'source_type':
+        plot_df[color_field] = plot_df[color_field].astype(str)
+    else:
+        plot_df[color_field] = pd.to_numeric(plot_df[color_field], errors='coerce').fillna(0)
 
     # Sort by label and datetime
     plot_df = plot_df.sort_values(['label', 'plan_datetime'])
@@ -81,13 +84,23 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     num_unique_labels = plot_df['label'].nunique()
     dynamic_height = _calculate_dynamic_height(num_unique_labels)
 
-    # Determine color scale and label
-    if 'utilization' in color_field or 'pct' in color_field:
-        color_scale = 'RdYlGn_r'  # Reversed: red for high utilization, green for low
-        color_label = color_field.replace('_', ' ').title() + ' (%)'
+    color_label = color_field.replace('_', ' ').title()
+
+    color_series = plot_df[color_field]
+    is_categorical = (
+        not pd.api.types.is_numeric_dtype(color_series)
+        or color_series.nunique(dropna=True) <= 5
+    )
+
+    if color_field == 'source_type':
+        color_label = "Request Source"
+        color_discrete_map = {
+            'Scheduled & Actual': '#2ca02c',
+            'Scheduled Only': '#1f77b4',
+            'Actual Only': '#d62728',
+        }
     else:
-        color_scale = 'Blues'
-        color_label = color_field.replace('_', ' ').title()
+        color_discrete_map = None
 
     # Build custom data for hover - simplified metrics only
     custom_data_fields = [
@@ -96,17 +109,31 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
-    # Create the timeline figure
-    fig = px.timeline(
-        plot_df,
-        x_start='plan_datetime',
-        x_end='end_datetime',
-        y='label',
-        color=color_field,
-        color_continuous_scale=color_scale,
-        custom_data=custom_data,
-        title='Hourly Collection Plans - Provider/Site Timeline'
-    )
+    if is_categorical and color_discrete_map:
+        fig = px.timeline(
+            plot_df,
+            x_start='plan_datetime',
+            x_end='end_datetime',
+            y='label',
+            color=color_field,
+            color_discrete_map=color_discrete_map,
+            custom_data=custom_data,
+            title='Hourly Collection Plans - Provider/Site Timeline'
+        )
+        legend_title = color_label
+    else:
+        color_scale = 'RdYlGn_r' if 'utilization' in color_field or 'pct' in color_field else 'Blues'
+        fig = px.timeline(
+            plot_df,
+            x_start='plan_datetime',
+            x_end='end_datetime',
+            y='label',
+            color=color_field,
+            color_continuous_scale=color_scale,
+            custom_data=custom_data,
+            title='Hourly Collection Plans - Provider/Site Timeline'
+        )
+        legend_title = color_label
 
     # Build hover template - simplified
     hover_parts = [
@@ -139,7 +166,7 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     hover_template = ''.join(hover_parts) + "<extra></extra>"
 
     # Update layout and styling
-    fig.update_layout(
+    layout_kwargs = dict(
         xaxis=dict(
             title="",
             domain=[0, 1]
@@ -151,7 +178,6 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
             tickmode='linear',
             dtick=1
         ),
-        coloraxis_colorbar_title=color_label,
         hovermode='closest',
         height=dynamic_height,  # Use dynamically calculated height
         margin=dict(l=150, r=40, t=70, b=200),
@@ -159,6 +185,14 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         paper_bgcolor="white",
         bargap=0.05,  # Reduce gap between bars (default is 0.2)
     )
+
+    if not (is_categorical and color_discrete_map):
+        layout_kwargs['coloraxis_colorbar_title'] = legend_title
+
+    fig.update_layout(**layout_kwargs)
+
+    if is_categorical and color_discrete_map:
+        fig.update_layout(legend_title_text=legend_title, showlegend=True)
 
     # Update traces
     fig.update_traces(

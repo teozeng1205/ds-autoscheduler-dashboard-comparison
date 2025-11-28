@@ -7,6 +7,7 @@ from threading import Lock
 
 import dash
 import dash_bootstrap_components as dbc
+import pandas as pd
 from dash import Input, Output, State, callback_context, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
@@ -17,6 +18,15 @@ from dashboard import (
     build_gantt_figure,
     get_auto_schedule_ids,
 )
+
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+else:
+    root_logger.setLevel(logging.INFO)
 
 log = logging.getLogger(__name__)
 
@@ -253,13 +263,14 @@ app.layout = dbc.Container([
                             dcc.Dropdown(
                                 id='color-field-dropdown',
                                 options=[
+                                    {'label': 'Request Source (Scheduled vs Actual)', 'value': 'source_type'},
                                     {'label': 'Difference (Actual - Scheduled)', 'value': 'difference'},
                                     {'label': 'Difference %', 'value': 'difference_pct'},
                                     {'label': 'Actual Requests', 'value': 'actual_requests'},
                                     {'label': 'Scheduled Requests', 'value': 'sending'},
                                     {'label': 'Capacity', 'value': 'total_capacity'},
                                 ],
-                                value='difference',
+                                value='source_type',
                                 className="mb-3",
                                 style={'fontSize': '0.8rem'}
                             ),
@@ -542,14 +553,21 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         df = _cached_dataset.copy()
 
     # Apply date range filter
-    if start_date:
-        import pandas as pd
-        start_dt = pd.to_datetime(start_date)
+    def _parse_sales_date(value):
+        if value is None:
+            return None
+        try:
+            return pd.to_datetime(str(value), format='%Y%m%d', errors='coerce')
+        except (TypeError, ValueError):
+            return None
+
+    start_dt = _parse_sales_date(start_date)
+    if start_dt is not None and pd.notna(start_dt):
         df = df[df['plan_datetime'] >= start_dt]
 
-    if end_date:
-        import pandas as pd
-        end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    end_dt = _parse_sales_date(end_date)
+    if end_dt is not None and pd.notna(end_dt):
+        end_dt = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         df = df[df['plan_datetime'] <= end_dt]
 
     # Apply filters
@@ -572,7 +590,7 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
             df = df[df['auto_schedule_id'] == id_filter]
 
     # Build the Gantt figure
-    fig = build_gantt_figure(df, color_field=color_field or 'difference')
+    fig = build_gantt_figure(df, color_field=color_field or 'source_type')
 
     return fig
 
