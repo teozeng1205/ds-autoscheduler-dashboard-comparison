@@ -548,7 +548,7 @@ def loading_state(load_clicks, refresh_clicks, load_complete):
      Input('filter-provider', 'value'),
      Input('filter-site', 'value'),
      Input('filter-auto-schedule-id', 'value'),
-     Input('filter-source-type', 'value'),
+    Input('filter-source-type', 'value'),
      Input('filter-date-range', 'start_date'),
      Input('filter-date-range', 'end_date')]
 )
@@ -558,9 +558,9 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         raise PreventUpdate
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    start_date = dataset_data.get('start_date')
-    end_date = dataset_data.get('end_date')
-    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
+    actual_start_date = dataset_data.get('start_date')
+    actual_end_date = dataset_data.get('end_date')
+    cache_key = (tuple(auto_schedule_ids), actual_start_date, actual_end_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
@@ -599,12 +599,15 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
 
     # Apply date picker filters (only affects the visualization, not the loaded data)
     if start_date:
-        start_dt = pd.to_datetime(start_date)
-        df = df[df['plan_datetime'] >= start_dt]
+        start_dt = pd.to_datetime(start_date, errors='coerce')
+        if pd.notna(start_dt):
+            df = df[df['plan_datetime'] >= start_dt]
 
     if end_date:
-        end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        df = df[df['plan_datetime'] <= end_dt]
+        end_dt = pd.to_datetime(end_date, errors='coerce')
+        if pd.notna(end_dt):
+            end_dt = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            df = df[df['plan_datetime'] <= end_dt]
 
     # Build the Gantt figure
     fig = build_gantt_figure(df, color_field=color_field or 'source_type')
