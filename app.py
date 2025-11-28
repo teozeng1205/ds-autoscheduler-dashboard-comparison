@@ -1,0 +1,466 @@
+"""Entry point for the Hourly Collection Plans Gantt Dashboard."""
+
+import logging
+import os
+from datetime import datetime
+from threading import Lock
+
+import dash
+import dash_bootstrap_components as dbc
+from dash import Input, Output, State, callback_context, dcc, html, no_update
+from dash.exceptions import PreventUpdate
+
+from dashboard import (
+    DataLoader,
+    HourlyCollectionPlansReader,
+    build_gantt_figure,
+    get_auto_schedule_ids,
+)
+
+log = logging.getLogger(__name__)
+
+# Connection management
+_READER_LOCK = Lock()
+_reader_instance: HourlyCollectionPlansReader | None = None
+
+
+def _get_reader() -> HourlyCollectionPlansReader:
+    """Return a shared HourlyCollectionPlansReader instance."""
+    global _reader_instance
+    with _READER_LOCK:
+        if _reader_instance is None:
+            _reader_instance = HourlyCollectionPlansReader()
+        return _reader_instance
+
+
+def _reset_reader() -> None:
+    """Close and recreate the reader connection."""
+    global _reader_instance
+    with _READER_LOCK:
+        if _reader_instance is not None:
+            try:
+                _reader_instance.close()
+            except Exception:
+                pass
+        _reader_instance = HourlyCollectionPlansReader()
+        log.info("Re-established reader connection")
+
+
+def _is_connection_error(err: Exception) -> bool:
+    """Check if error is a connection issue."""
+    if isinstance(err, (BrokenPipeError, ConnectionError)):
+        return True
+    error_str = str(err).lower()
+    return any(
+        marker in error_str
+        for marker in [
+            "eof occurred in violation of protocol",
+            "_ssl.c",
+            "broken pipe",
+            "connection reset",
+        ]
+    )
+
+
+# Data storage
+_DATASET_LOCK = Lock()
+_cached_dataset = None
+_cached_ids = None
+
+
+def _load_dataset_with_retry(auto_schedule_ids: list[int], force_refresh: bool = False):
+    """Load dataset with connection retry logic."""
+    try:
+        return _load_dataset(auto_schedule_ids, force_refresh)
+    except Exception as exc:
+        if not _is_connection_error(exc):
+            raise
+        log.warning("Connection error; refreshing reader and retrying.")
+        _reset_reader()
+        return _load_dataset(auto_schedule_ids, force_refresh)
+
+
+def _load_dataset(auto_schedule_ids: list[int], force_refresh: bool = False):
+    """Load the dataset."""
+    global _cached_dataset, _cached_ids
+
+    with _DATASET_LOCK:
+        if not force_refresh and _cached_ids == auto_schedule_ids and _cached_dataset is not None:
+            log.info("Using cached dataset")
+            return _cached_dataset.copy(), False
+
+        loader = DataLoader(reader=_get_reader(), auto_schedule_ids=auto_schedule_ids)
+        df = loader.load(force_refresh=force_refresh)
+        _cached_dataset = df.copy()
+        _cached_ids = auto_schedule_ids
+        return df, loader.loaded_from_cache
+
+
+# Initialize Dash app
+FILTER_COLUMN_STYLE = {
+    'flex': '0 0 220px',
+    'minWidth': '180px',
+    'maxWidth': '250px',
+    'flexShrink': 0,
+}
+
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app.title = "Hourly Collection Plans Dashboard"
+server = app.server
+
+# Build layout with filters on left
+app.layout = dbc.Container([
+    html.H1("Hourly Collection Plans - Gantt View", className="mb-4"),
+
+    # Control bar
+    dbc.Row([
+        dbc.Col([
+            dbc.InputGroup([
+                dbc.InputGroupText("IDs:"),
+                dbc.Input(
+                    id='num-ids-input',
+                    type='number',
+                    value=2,
+                    min=1,
+                    max=10,
+                    step=1,
+                    className="form-control"
+                ),
+            ], size="sm", className="me-2"),
+        ], width="auto"),
+        dbc.Col([
+            dbc.Button("Load Data", id='load-btn', color="primary", size="sm", className="me-2"),
+            dbc.Button("Refresh", id='refresh-btn', color="secondary", size="sm", className="me-2"),
+            html.Span(id='loading-text', className="ms-2 text-muted"),
+        ], width="auto"),
+        dbc.Col([
+            dbc.Button("Hide Filters", id='toggle-filters-btn', color="secondary", size="sm"),
+        ], width="auto"),
+    ], className="control-bar align-items-center mb-3"),
+
+    # Status alert
+    dbc.Alert(id='status-alert', is_open=False, duration=4000, className="mb-3"),
+
+    # Main content row with filters sidebar and chart
+    dbc.Row([
+        # Filters sidebar (left) - narrow width
+        dbc.Col([
+            dbc.Collapse([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H6("Filters", className="mb-3"),
+
+                        html.Div([
+                            html.Label("Date Range", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.DatePickerRange(
+                                id='filter-date-range',
+                                display_format='MMM DD',
+                                start_date_placeholder_text='Start',
+                                end_date_placeholder_text='End',
+                                style={'width': '100%', 'fontSize': '0.75rem'},
+                                className="mb-3"
+                            ),
+                        ]),
+
+                        html.Div([
+                            html.Label("Provider", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.Dropdown(
+                                id='filter-provider',
+                                options=[],
+                                value='all',
+                                multi=True,
+                                placeholder="All",
+                                className="mb-3",
+                                style={'fontSize': '0.8rem'}
+                            ),
+                        ]),
+
+                        html.Div([
+                            html.Label("Site", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.Dropdown(
+                                id='filter-site',
+                                options=[],
+                                value='all',
+                                multi=True,
+                                placeholder="All",
+                                className="mb-3",
+                                style={'fontSize': '0.8rem'}
+                            ),
+                        ]),
+
+                        html.Div([
+                            html.Label("Schedule ID", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.Dropdown(
+                                id='filter-auto-schedule-id',
+                                options=[],
+                                value='all',
+                                multi=True,
+                                placeholder="All",
+                                className="mb-3",
+                                style={'fontSize': '0.8rem'}
+                            ),
+                        ]),
+
+                        html.Div([
+                            html.Label("Color By", className="mb-1", style={'fontSize': '0.85rem'}),
+                            dcc.Dropdown(
+                                id='color-field-dropdown',
+                                options=[
+                                    {'label': 'Hour Util %', 'value': 'hour_utilization_pct'},
+                                    {'label': 'Net Util %', 'value': 'net_utilization_pct'},
+                                    {'label': 'Allocated', 'value': 'allocated_capacity'},
+                                    {'label': 'Total Cap', 'value': 'total_capacity'},
+                                    {'label': 'Sending', 'value': 'sending'},
+                                ],
+                                value='hour_utilization_pct',
+                                className="mb-3",
+                                style={'fontSize': '0.8rem'}
+                            ),
+                        ]),
+                    ], style={'padding': '0.75rem'})
+                ], style={'minWidth': '180px', 'maxWidth': '200px'})
+            ], id='filters-collapse', is_open=True)
+        ], id='filters-column', width='auto', className="filters-sidebar", style=dict(FILTER_COLUMN_STYLE)),
+
+        # Main chart area (right)
+        dbc.Col([
+            dcc.Loading(
+                id='gantt-loading',
+                type='default',
+                children=dcc.Graph(id='gantt-chart', config={'displayModeBar': True})
+            )
+        ], width=True, className="main-content")
+    ], className="dashboard-body", style={'flexWrap': 'nowrap'}),
+
+    # Hidden stores
+    dcc.Store(id='dataset-store'),
+    dcc.Store(id='load-complete'),
+
+], fluid=True, className="py-3")
+
+
+@app.callback(
+    [Output('dataset-store', 'data'),
+     Output('status-alert', 'children'),
+     Output('status-alert', 'color'),
+     Output('status-alert', 'is_open'),
+     Output('load-complete', 'data')],
+    [Input('load-btn', 'n_clicks'),
+     Input('refresh-btn', 'n_clicks')],
+    State('num-ids-input', 'value')
+)
+def load_data(load_clicks, refresh_clicks, num_ids):
+    """Load or refresh the dataset."""
+    ctx = callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if triggered_id not in ('load-btn', 'refresh-btn'):
+        raise PreventUpdate
+
+    force_refresh = triggered_id == 'refresh-btn'
+
+    try:
+        # Validate num_ids
+        if num_ids is None or num_ids < 1:
+            num_ids = 2
+
+        # Get the auto_schedule_ids
+        reader = _get_reader()
+        auto_schedule_ids = get_auto_schedule_ids(reader, limit=num_ids)
+
+        if not auto_schedule_ids:
+            return (
+                no_update,
+                "No auto_schedule_ids found in database",
+                'warning',
+                True,
+                datetime.now().isoformat()
+            )
+
+        # Load the dataset
+        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, force_refresh)
+
+        record_count = len(df)
+        message = f"Loaded {record_count:,} records for auto_schedule_ids: {', '.join(str(id) for id in auto_schedule_ids)}"
+        if loaded_from_cache:
+            message += " (from cache)"
+
+        return (
+            {'auto_schedule_ids': auto_schedule_ids, 'loaded_at': datetime.now().isoformat()},
+            message,
+            'success',
+            True,
+            datetime.now().isoformat()
+        )
+
+    except Exception as exc:
+        error_msg = str(exc)
+        log.error("Error loading data: %s", error_msg)
+        return (
+            no_update,
+            f"Error loading data: {error_msg}",
+            'danger',
+            True,
+            datetime.now().isoformat()
+        )
+
+
+@app.callback(
+    [Output('filters-collapse', 'is_open'),
+     Output('toggle-filters-btn', 'children'),
+     Output('filters-column', 'style')],
+    Input('toggle-filters-btn', 'n_clicks'),
+    State('filters-collapse', 'is_open')
+)
+def toggle_filters(n_clicks, is_open):
+    """Toggle filters sidebar visibility."""
+    if is_open is None:
+        is_open = True
+
+    base_style = dict(FILTER_COLUMN_STYLE)
+    hidden_style = {
+        **FILTER_COLUMN_STYLE,
+        'flex': '0 0 0',
+        'minWidth': '0',
+        'maxWidth': '0',
+        'width': '0',
+        'overflow': 'hidden',
+        'padding': '0',
+        'margin': '0',
+    }
+
+    if not n_clicks:
+        label = "Hide Filters" if is_open else "Show Filters"
+        style = base_style if is_open else hidden_style
+        return is_open, label, style
+
+    new_state = not is_open
+    label = "Hide Filters" if new_state else "Show Filters"
+    style = base_style if new_state else hidden_style
+    return new_state, label, style
+
+
+@app.callback(
+    [Output('filter-provider', 'options'),
+     Output('filter-site', 'options'),
+     Output('filter-auto-schedule-id', 'options')],
+    Input('dataset-store', 'data')
+)
+def update_filter_options(dataset_data):
+    """Update filter dropdown options when data is loaded."""
+    if not dataset_data or 'auto_schedule_ids' not in dataset_data:
+        return [[{'label': 'All', 'value': 'all'}]] * 3
+
+    auto_schedule_ids = dataset_data['auto_schedule_ids']
+
+    # Get the cached dataset
+    with _DATASET_LOCK:
+        if _cached_ids != auto_schedule_ids or _cached_dataset is None:
+            return [[{'label': 'All', 'value': 'all'}]] * 3
+        df = _cached_dataset.copy()
+
+    # Provider options
+    provider_options = [{'label': 'All', 'value': 'all'}]
+    providers = df['provider_code'].dropna().unique()
+    provider_options.extend({'label': p, 'value': p} for p in sorted(providers))
+
+    # Site options
+    site_options = [{'label': 'All', 'value': 'all'}]
+    sites = df['site_code'].dropna().unique()
+    site_options.extend({'label': s, 'value': s} for s in sorted(sites))
+
+    # Auto Schedule ID options
+    id_options = [{'label': 'All', 'value': 'all'}]
+    ids = df['auto_schedule_id'].dropna().unique()
+    id_options.extend({'label': str(i), 'value': i} for i in sorted(ids, reverse=True))
+
+    return provider_options, site_options, id_options
+
+
+@app.callback(
+    [Output('loading-text', 'children'),
+     Output('load-btn', 'disabled'),
+     Output('refresh-btn', 'disabled')],
+    [Input('load-btn', 'n_clicks'),
+     Input('refresh-btn', 'n_clicks'),
+     Input('load-complete', 'data')]
+)
+def loading_state(load_clicks, refresh_clicks, load_complete):
+    """Show loading indicator and disable buttons during load."""
+    ctx = callback_context
+    if not ctx.triggered:
+        return "", False, False
+
+    triggered_ids = {t['prop_id'].split('.')[0] for t in ctx.triggered if t.get('prop_id')}
+
+    if 'load-complete' in triggered_ids:
+        return "", False, False
+    elif triggered_ids.intersection({'load-btn', 'refresh-btn'}):
+        return "Loading...", True, True
+
+    return "", False, False
+
+
+@app.callback(
+    Output('gantt-chart', 'figure'),
+    [Input('dataset-store', 'data'),
+     Input('color-field-dropdown', 'value'),
+     Input('filter-provider', 'value'),
+     Input('filter-site', 'value'),
+     Input('filter-auto-schedule-id', 'value'),
+     Input('filter-date-range', 'start_date'),
+     Input('filter-date-range', 'end_date')]
+)
+def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_filter, start_date, end_date):
+    """Update the Gantt chart when data or filters change."""
+    if not dataset_data or 'auto_schedule_ids' not in dataset_data:
+        raise PreventUpdate
+
+    auto_schedule_ids = dataset_data['auto_schedule_ids']
+
+    # Get the cached dataset
+    with _DATASET_LOCK:
+        if _cached_ids != auto_schedule_ids or _cached_dataset is None:
+            raise PreventUpdate
+        df = _cached_dataset.copy()
+
+    # Apply date range filter
+    if start_date:
+        import pandas as pd
+        start_dt = pd.to_datetime(start_date)
+        df = df[df['plan_datetime'] >= start_dt]
+
+    if end_date:
+        import pandas as pd
+        end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        df = df[df['plan_datetime'] <= end_dt]
+
+    # Apply filters
+    if provider_filter and 'all' not in provider_filter:
+        if isinstance(provider_filter, list):
+            df = df[df['provider_code'].isin(provider_filter)]
+        else:
+            df = df[df['provider_code'] == provider_filter]
+
+    if site_filter and 'all' not in site_filter:
+        if isinstance(site_filter, list):
+            df = df[df['site_code'].isin(site_filter)]
+        else:
+            df = df[df['site_code'] == site_filter]
+
+    if id_filter and 'all' not in id_filter:
+        if isinstance(id_filter, list):
+            df = df[df['auto_schedule_id'].isin(id_filter)]
+        else:
+            df = df[df['auto_schedule_id'] == id_filter]
+
+    # Build the Gantt figure
+    fig = build_gantt_figure(df, color_field=color_field or 'hour_utilization_pct')
+
+    return fig
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=8051)
