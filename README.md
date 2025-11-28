@@ -1,31 +1,33 @@
 # Scheduled vs Actual Comparison Dashboard
 
-A Dash dashboard for comparing scheduled hourly collection plans (what we plan to send) vs actual sent data (what was actually sent) from provider audit logs.
+A simplified Dash dashboard for comparing scheduled hourly collection plans (what we plan to send) vs actual sent data (what was actually sent) from provider audit logs.
 
 ## Purpose
 
 This dashboard compares:
-- **Scheduled Data**: Hourly collection plans from PriceEye `as_hourly_collection_plans` table (what we are scheduled to send)
-- **Actual Sent Data**: Provider audit data from `prod.monitoring.provider_combined_audit` table (what was actually sent)
+- **Scheduled Requests**: Hourly collection plans from PriceEye `as_hourly_collection_plans` table (what we are scheduled to send)
+- **Actual Requests**: Provider audit data from `prod.monitoring.provider_combined_audit` table (what was actually sent)
 
-The comparison helps identify variances between planned and actual provider file sends, enabling better monitoring and scheduling optimization.
+The comparison helps identify differences between planned and actual provider file sends, enabling better monitoring and scheduling optimization.
 
 ## Features
 
-- **Comparison View**: Side-by-side comparison of scheduled vs actual sent requests
+- **Simplified Comparison View**: Focus on key metrics only
+  - **Capacity**: Total capacity available
+  - **Scheduled Requests**: Number of requests we planned to send
+  - **Actual Requests**: Number of requests actually sent
+  - **Difference**: Actual - Scheduled (positive = sent more than planned, negative = sent less)
+  - **Difference %**: Percentage difference relative to scheduled
+
 - **Gantt Chart**: Interactive timeline visualization showing provider/site data over time
-- **Variance Metrics**: Automatically calculates:
-  - **Variance**: Difference between scheduled and actual (scheduled - actual)
-  - **Variance %**: Percentage variance relative to scheduled
+
 - **Multiple Color Options**: Visualize by different comparison metrics:
-  - Variance (absolute difference)
-  - Variance % (percentage difference)
-  - Actual Requests (what was actually sent)
-  - Scheduled/Sending (what was planned to be sent)
-  - Hour Utilization %
-  - Net Utilization %
-  - Allocated Capacity
-  - Total Capacity
+  - Difference (Actual - Scheduled)
+  - Difference %
+  - Actual Requests
+  - Scheduled Requests
+  - Capacity
+
 - **Flexible Filters**: Filter by provider, site, schedule ID, and date range
 
 ## Data Sources
@@ -68,23 +70,19 @@ The dashboard will be available at: http://127.0.0.1:8051/
 
 When hovering over bars in the Gantt chart, you'll see:
 
-- Provider/Site
-- Time (hour)
-- Capacity details (base, total, available)
-- Allocation details (allocated, sending, total reserved)
-- Reserved breakdown (import, retry, cache freed)
-- Utilization percentages
-- **Comparison metrics** (when actual data is loaded):
-  - Scheduled (Sending)
-  - Actual Sent
-  - Variance
-  - Variance %
+- **Provider/Site**
+- **Time** (hour)
+- **Capacity**: Total capacity available
+- **Scheduled Requests**: Number of requests planned to be sent
+- **Actual Requests**: Number of requests actually sent
+- **Difference**: Actual - Scheduled
+- **Difference %**: Percentage difference
 
-## Understanding the Comparison
+## Understanding the Difference
 
-- **Positive Variance**: We scheduled more than what was actually sent (over-scheduled)
-- **Negative Variance**: We scheduled less than what was actually sent (under-scheduled)
-- **Zero Variance**: Perfect match between scheduled and actual
+- **Positive Difference**: We sent more than scheduled (over-delivery)
+- **Negative Difference**: We sent less than scheduled (under-delivery)
+- **Zero Difference**: Perfect match between scheduled and actual
 
 ## Structure
 

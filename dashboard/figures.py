@@ -89,14 +89,10 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         color_scale = 'Blues'
         color_label = color_field.replace('_', ' ').title()
 
-    # Build custom data for hover (including comparison fields if available)
+    # Build custom data for hover - simplified metrics only
     custom_data_fields = [
         'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
-        'capacity', 'total_capacity', 'allocated_capacity', 'sending',
-        'import_reserved_capacity', 'retry_reserved_capacity', 'cache_freed_capacity',
-        'available_for_utilization', 'total_reserved',
-        'net_utilization_pct', 'hour_utilization_pct',
-        'actual_requests', 'variance', 'variance_pct'
+        'total_capacity', 'sending', 'actual_requests', 'difference', 'difference_pct'
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
@@ -112,54 +108,33 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         title='Hourly Collection Plans - Provider/Site Timeline'
     )
 
-    # Build hover template
+    # Build hover template - simplified
     hover_parts = [
         "<b>%{y}</b><br>",
         "Time: %{x|%Y-%m-%d %H:00}<br>",
-        f"{color_label}: %{{customdata[{custom_data.index('hour_utilization_pct') if 'hour_utilization_pct' in custom_data else 0}]:.1f}}%<br>" if 'hour_utilization_pct' in custom_data else "",
-        "<br><b>Capacity Details:</b><br>",
+        "<br>",
     ]
 
-    if 'capacity' in custom_data:
-        hover_parts.append(f"Base Capacity: %{{customdata[{custom_data.index('capacity')}]:,.0f}}<br>")
+    # Capacity
     if 'total_capacity' in custom_data:
-        hover_parts.append(f"Total Capacity: %{{customdata[{custom_data.index('total_capacity')}]:,.0f}}<br>")
-    if 'available_for_utilization' in custom_data:
-        hover_parts.append(f"Available: %{{customdata[{custom_data.index('available_for_utilization')}]:,.0f}}<br>")
+        hover_parts.append(f"<b>Capacity:</b> %{{customdata[{custom_data.index('total_capacity')}]:,.0f}}<br>")
 
-    hover_parts.append("<br><b>Allocation:</b><br>")
-    if 'allocated_capacity' in custom_data:
-        hover_parts.append(f"Allocated: %{{customdata[{custom_data.index('allocated_capacity')}]:,.0f}}<br>")
+    # Requests comparison
     if 'sending' in custom_data:
-        hover_parts.append(f"Sending: %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
-    if 'total_reserved' in custom_data:
-        hover_parts.append(f"Total Reserved: %{{customdata[{custom_data.index('total_reserved')}]:,.0f}}<br>")
+        hover_parts.append(f"<b>Scheduled Requests:</b> %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
 
-    hover_parts.append("<br><b>Reserved Breakdown:</b><br>")
-    if 'import_reserved_capacity' in custom_data:
-        hover_parts.append(f"Import Reserved: %{{customdata[{custom_data.index('import_reserved_capacity')}]:,.0f}}<br>")
-    if 'retry_reserved_capacity' in custom_data:
-        hover_parts.append(f"Retry Reserved: %{{customdata[{custom_data.index('retry_reserved_capacity')}]:,.0f}}<br>")
-    if 'cache_freed_capacity' in custom_data:
-        hover_parts.append(f"Cache Freed: %{{customdata[{custom_data.index('cache_freed_capacity')}]:,.0f}}<br>")
-
-    if 'net_utilization_pct' in custom_data:
-        hover_parts.append(f"<br>Net Utilization: %{{customdata[{custom_data.index('net_utilization_pct')}]:.1f}}%<br>")
-
-    # Add comparison data if available
     if 'actual_requests' in custom_data:
-        hover_parts.append("<br><b>Comparison (Scheduled vs Actual):</b><br>")
-        hover_parts.append(f"Scheduled (Sending): %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
-        hover_parts.append(f"Actual Sent: %{{customdata[{custom_data.index('actual_requests')}]:,.0f}}<br>")
+        hover_parts.append(f"<b>Actual Requests:</b> %{{customdata[{custom_data.index('actual_requests')}]:,.0f}}<br>")
 
-    if 'variance' in custom_data:
-        hover_parts.append(f"Variance: %{{customdata[{custom_data.index('variance')}]:,.0f}}<br>")
+    # Difference
+    if 'difference' in custom_data:
+        hover_parts.append(f"<b>Difference:</b> %{{customdata[{custom_data.index('difference')}]:,.0f}}<br>")
 
-    if 'variance_pct' in custom_data:
-        hover_parts.append(f"Variance %: %{{customdata[{custom_data.index('variance_pct')}]:.1f}}%<br>")
+    if 'difference_pct' in custom_data:
+        hover_parts.append(f"<b>Difference %:</b> %{{customdata[{custom_data.index('difference_pct')}]:.1f}}%<br>")
 
     if 'auto_schedule_id' in custom_data:
-        hover_parts.append(f"<br>Auto Schedule ID: %{{customdata[{custom_data.index('auto_schedule_id')}]}}<br>")
+        hover_parts.append(f"<br>Schedule ID: %{{customdata[{custom_data.index('auto_schedule_id')}]}}<br>")
 
     hover_template = ''.join(hover_parts) + "<extra></extra>"
 

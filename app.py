@@ -241,16 +241,13 @@ app.layout = dbc.Container([
                             dcc.Dropdown(
                                 id='color-field-dropdown',
                                 options=[
-                                    {'label': 'Variance', 'value': 'variance'},
-                                    {'label': 'Variance %', 'value': 'variance_pct'},
+                                    {'label': 'Difference (Actual - Scheduled)', 'value': 'difference'},
+                                    {'label': 'Difference %', 'value': 'difference_pct'},
                                     {'label': 'Actual Requests', 'value': 'actual_requests'},
-                                    {'label': 'Scheduled (Sending)', 'value': 'sending'},
-                                    {'label': 'Hour Util %', 'value': 'hour_utilization_pct'},
-                                    {'label': 'Net Util %', 'value': 'net_utilization_pct'},
-                                    {'label': 'Allocated', 'value': 'allocated_capacity'},
-                                    {'label': 'Total Cap', 'value': 'total_capacity'},
+                                    {'label': 'Scheduled Requests', 'value': 'sending'},
+                                    {'label': 'Capacity', 'value': 'total_capacity'},
                                 ],
-                                value='variance',
+                                value='difference',
                                 className="mb-3",
                                 style={'fontSize': '0.8rem'}
                             ),
@@ -525,7 +522,7 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
             df = df[df['auto_schedule_id'] == id_filter]
 
     # Build the Gantt figure
-    fig = build_gantt_figure(df, color_field=color_field or 'variance')
+    fig = build_gantt_figure(df, color_field=color_field or 'difference')
 
     return fig
 

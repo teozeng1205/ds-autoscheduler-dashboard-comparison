@@ -233,15 +233,24 @@ class ComparisonDataLoader:
                 comparison_df = self._merge_scheduled_and_actual(scheduled_df, actual_df)
             else:
                 log.warning("No actual sent data found for sales_date %s", self.sales_date)
-                comparison_df = scheduled_df
+                essential_cols = [
+                    'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
+                    'plan_datetime', 'label', 'total_capacity', 'sending'
+                ]
+                comparison_df = scheduled_df[essential_cols].copy()
                 comparison_df['actual_requests'] = 0
-                comparison_df['variance'] = comparison_df['sending']
-                comparison_df['variance_pct'] = 0.0
+                comparison_df['difference'] = -comparison_df['sending']
+                comparison_df['difference_pct'] = -100.0
         else:
-            comparison_df = scheduled_df
+            # No actual data - keep only essential columns
+            essential_cols = [
+                'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
+                'plan_datetime', 'label', 'total_capacity', 'sending'
+            ]
+            comparison_df = scheduled_df[essential_cols].copy()
             comparison_df['actual_requests'] = 0
-            comparison_df['variance'] = comparison_df['sending']
-            comparison_df['variance_pct'] = 0.0
+            comparison_df['difference'] = -comparison_df['sending']  # All scheduled, none sent
+            comparison_df['difference_pct'] = -100.0
 
         return comparison_df
 
@@ -344,8 +353,14 @@ class ComparisonDataLoader:
             'actual_requests': 'sum'
         })
 
-        # Merge with scheduled data
-        comparison_df = scheduled_df.merge(
+        # Merge with scheduled data - keep only essential columns
+        essential_cols = [
+            'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
+            'plan_datetime', 'label', 'total_capacity', 'sending'
+        ]
+        scheduled_essential = scheduled_df[essential_cols].copy()
+
+        comparison_df = scheduled_essential.merge(
             actual_agg,
             left_on=['provider_code', 'site_code', 'plan_datetime'],
             right_on=['provider_code', 'site_code', 'actual_datetime'],
@@ -359,12 +374,13 @@ class ComparisonDataLoader:
         if 'actual_datetime' in comparison_df.columns:
             comparison_df = comparison_df.drop(columns=['actual_datetime'])
 
-        # Calculate variance (scheduled - actual)
-        comparison_df['variance'] = comparison_df['sending'] - comparison_df['actual_requests']
+        # Calculate difference (actual - scheduled)
+        # Positive means we sent more than planned, negative means we sent less
+        comparison_df['difference'] = comparison_df['actual_requests'] - comparison_df['sending']
 
-        # Calculate variance percentage
-        comparison_df['variance_pct'] = (
-            100.0 * comparison_df['variance'] / comparison_df['sending'].replace(0, pd.NA)
+        # Calculate difference percentage
+        comparison_df['difference_pct'] = (
+            100.0 * comparison_df['difference'] / comparison_df['sending'].replace(0, pd.NA)
         ).fillna(0)
 
         log.info("Created comparison dataset with %s records", len(comparison_df))
