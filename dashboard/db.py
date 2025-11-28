@@ -24,24 +24,48 @@ class HourlyCollectionPlansReader(redshift_connector.RedshiftConnector):
         """Return the credential properties filename for ThreeVictors."""
         return "database-core-local-redshift-serverless-reader.properties"
 
-    def fetch_auto_schedule_ids(self, limit: int = 10) -> List[int]:
-        """Return the most recent auto_schedule_id values."""
-        query = """
-            SELECT DISTINCT auto_schedule_id
-            FROM local.federated_priceeye.as_hourly_collection_plans
-            ORDER BY 1 DESC
-            LIMIT %s
+
+class ActualSentDataReader(redshift_connector.RedshiftConnector):
+    """Reader that pulls actual sent data from the analytics database."""
+
+    def __init__(self):
+        log.info("Initializing ActualSentDataReader")
+        super().__init__()
+        log.info("ActualSentDataReader ready")
+
+    def get_properties_filename(self) -> str:
+        """Return the credential properties filename for ThreeVictors."""
+        return "database-analytics-redshift-serverless-reader.properties"
+
+    def fetch_actual_sent_data(self, sales_date: int) -> pd.DataFrame:
         """
-        with self.get_connection().cursor() as cursor:
-            cursor.execute(query, (limit,))
-            rows = cursor.fetchall()
+        Fetch actual sent data from provider_combined_audit table.
 
-        if not rows:
-            raise RuntimeError("No auto_schedule_id values found in as_hourly_collection_plans")
+        Args:
+            sales_date: Sales date in YYYYMMDD format (e.g., 20251127)
 
-        ids = [int(row[0]) for row in rows]
-        log.info("Found %s auto_schedule_ids: %s", len(ids), ids)
-        return ids
+        Returns:
+            DataFrame with columns: providercode, sitecode, scheduledate, scheduletime, requests
+        """
+        query = """
+            SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
+            FROM prod.monitoring.provider_combined_audit
+            WHERE sales_date = %s
+            GROUP BY 1, 2, 3, 4
+        """
+
+        try:
+            with self.get_connection().cursor() as cursor:
+                cursor.execute(query, (sales_date,))
+                colnames = [desc[0] for desc in cursor.description]
+                records = cursor.fetchall()
+        except Exception as e:
+            log.error("Error fetching actual sent data: %s", e)
+            raise
+
+        df = pd.DataFrame(records, columns=colnames)
+        log.info("Fetched %s rows for sales_date %s", len(df), sales_date)
+        return df
 
     def fetch_hourly_collection_plans(self, auto_schedule_ids: List[int]) -> pd.DataFrame:
         """Return the hourly collection plans data for the specified auto_schedule_ids."""
@@ -111,4 +135,4 @@ ORDER BY auto_schedule_id DESC, plan_date, plan_hour
         return df
 
 
-__all__ = ["HourlyCollectionPlansReader"]
+__all__ = ["HourlyCollectionPlansReader", "ActualSentDataReader"]

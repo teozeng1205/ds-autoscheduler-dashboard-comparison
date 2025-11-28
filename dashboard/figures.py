@@ -89,13 +89,14 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         color_scale = 'Blues'
         color_label = color_field.replace('_', ' ').title()
 
-    # Build custom data for hover
+    # Build custom data for hover (including comparison fields if available)
     custom_data_fields = [
         'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
         'capacity', 'total_capacity', 'allocated_capacity', 'sending',
         'import_reserved_capacity', 'retry_reserved_capacity', 'cache_freed_capacity',
         'available_for_utilization', 'total_reserved',
-        'net_utilization_pct', 'hour_utilization_pct'
+        'net_utilization_pct', 'hour_utilization_pct',
+        'actual_requests', 'variance', 'variance_pct'
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
@@ -144,6 +145,18 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
 
     if 'net_utilization_pct' in custom_data:
         hover_parts.append(f"<br>Net Utilization: %{{customdata[{custom_data.index('net_utilization_pct')}]:.1f}}%<br>")
+
+    # Add comparison data if available
+    if 'actual_requests' in custom_data:
+        hover_parts.append("<br><b>Comparison (Scheduled vs Actual):</b><br>")
+        hover_parts.append(f"Scheduled (Sending): %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
+        hover_parts.append(f"Actual Sent: %{{customdata[{custom_data.index('actual_requests')}]:,.0f}}<br>")
+
+    if 'variance' in custom_data:
+        hover_parts.append(f"Variance: %{{customdata[{custom_data.index('variance')}]:,.0f}}<br>")
+
+    if 'variance_pct' in custom_data:
+        hover_parts.append(f"Variance %: %{{customdata[{custom_data.index('variance_pct')}]:.1f}}%<br>")
 
     if 'auto_schedule_id' in custom_data:
         hover_parts.append(f"<br>Auto Schedule ID: %{{customdata[{custom_data.index('auto_schedule_id')}]}}<br>")

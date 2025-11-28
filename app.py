@@ -11,8 +11,9 @@ from dash import Input, Output, State, callback_context, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
 from dashboard import (
-    DataLoader,
+    ComparisonDataLoader,
     HourlyCollectionPlansReader,
+    ActualSentDataReader,
     build_gantt_figure,
     get_auto_schedule_ids,
 )
@@ -21,29 +22,45 @@ log = logging.getLogger(__name__)
 
 # Connection management
 _READER_LOCK = Lock()
-_reader_instance: HourlyCollectionPlansReader | None = None
+_scheduled_reader_instance: HourlyCollectionPlansReader | None = None
+_actual_reader_instance: ActualSentDataReader | None = None
 
 
-def _get_reader() -> HourlyCollectionPlansReader:
+def _get_scheduled_reader() -> HourlyCollectionPlansReader:
     """Return a shared HourlyCollectionPlansReader instance."""
-    global _reader_instance
+    global _scheduled_reader_instance
     with _READER_LOCK:
-        if _reader_instance is None:
-            _reader_instance = HourlyCollectionPlansReader()
-        return _reader_instance
+        if _scheduled_reader_instance is None:
+            _scheduled_reader_instance = HourlyCollectionPlansReader()
+        return _scheduled_reader_instance
 
 
-def _reset_reader() -> None:
-    """Close and recreate the reader connection."""
-    global _reader_instance
+def _get_actual_reader() -> ActualSentDataReader:
+    """Return a shared ActualSentDataReader instance."""
+    global _actual_reader_instance
     with _READER_LOCK:
-        if _reader_instance is not None:
+        if _actual_reader_instance is None:
+            _actual_reader_instance = ActualSentDataReader()
+        return _actual_reader_instance
+
+
+def _reset_readers() -> None:
+    """Close and recreate the reader connections."""
+    global _scheduled_reader_instance, _actual_reader_instance
+    with _READER_LOCK:
+        if _scheduled_reader_instance is not None:
             try:
-                _reader_instance.close()
+                _scheduled_reader_instance.close()
             except Exception:
                 pass
-        _reader_instance = HourlyCollectionPlansReader()
-        log.info("Re-established reader connection")
+        if _actual_reader_instance is not None:
+            try:
+                _actual_reader_instance.close()
+            except Exception:
+                pass
+        _scheduled_reader_instance = HourlyCollectionPlansReader()
+        _actual_reader_instance = ActualSentDataReader()
+        log.info("Re-established reader connections")
 
 
 def _is_connection_error(err: Exception) -> bool:
@@ -68,31 +85,38 @@ _cached_dataset = None
 _cached_ids = None
 
 
-def _load_dataset_with_retry(auto_schedule_ids: list[int], force_refresh: bool = False):
+def _load_dataset_with_retry(auto_schedule_ids: list[int], sales_date: int | None, force_refresh: bool = False):
     """Load dataset with connection retry logic."""
     try:
-        return _load_dataset(auto_schedule_ids, force_refresh)
+        return _load_dataset(auto_schedule_ids, sales_date, force_refresh)
     except Exception as exc:
         if not _is_connection_error(exc):
             raise
-        log.warning("Connection error; refreshing reader and retrying.")
-        _reset_reader()
-        return _load_dataset(auto_schedule_ids, force_refresh)
+        log.warning("Connection error; refreshing readers and retrying.")
+        _reset_readers()
+        return _load_dataset(auto_schedule_ids, sales_date, force_refresh)
 
 
-def _load_dataset(auto_schedule_ids: list[int], force_refresh: bool = False):
-    """Load the dataset."""
+def _load_dataset(auto_schedule_ids: list[int], sales_date: int | None, force_refresh: bool = False):
+    """Load the comparison dataset."""
     global _cached_dataset, _cached_ids
 
+    cache_key = (tuple(auto_schedule_ids), sales_date)
+
     with _DATASET_LOCK:
-        if not force_refresh and _cached_ids == auto_schedule_ids and _cached_dataset is not None:
+        if not force_refresh and _cached_ids == cache_key and _cached_dataset is not None:
             log.info("Using cached dataset")
             return _cached_dataset.copy(), False
 
-        loader = DataLoader(reader=_get_reader(), auto_schedule_ids=auto_schedule_ids)
+        loader = ComparisonDataLoader(
+            scheduled_reader=_get_scheduled_reader(),
+            actual_reader=_get_actual_reader(),
+            auto_schedule_ids=auto_schedule_ids,
+            sales_date=sales_date
+        )
         df = loader.load(force_refresh=force_refresh)
         _cached_dataset = df.copy()
-        _cached_ids = auto_schedule_ids
+        _cached_ids = cache_key
         return df, loader.loaded_from_cache
 
 
@@ -105,18 +129,18 @@ FILTER_COLUMN_STYLE = {
 }
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-app.title = "Hourly Collection Plans Dashboard"
+app.title = "Scheduled vs Actual Comparison Dashboard"
 server = app.server
 
 # Build layout with filters on left
 app.layout = dbc.Container([
-    html.H1("Hourly Collection Plans - Gantt View", className="mb-4"),
+    html.H1("Scheduled vs Actual Sending - Comparison Dashboard", className="mb-4"),
 
     # Control bar
     dbc.Row([
         dbc.Col([
             dbc.InputGroup([
-                dbc.InputGroupText("IDs:"),
+                dbc.InputGroupText("Schedule IDs:"),
                 dbc.Input(
                     id='num-ids-input',
                     type='number',
@@ -124,6 +148,17 @@ app.layout = dbc.Container([
                     min=1,
                     max=10,
                     step=1,
+                    className="form-control"
+                ),
+            ], size="sm", className="me-2"),
+        ], width="auto"),
+        dbc.Col([
+            dbc.InputGroup([
+                dbc.InputGroupText("Sales Date:"),
+                dbc.Input(
+                    id='sales-date-input',
+                    type='number',
+                    placeholder='YYYYMMDD (e.g., 20251127)',
                     className="form-control"
                 ),
             ], size="sm", className="me-2"),
@@ -206,13 +241,16 @@ app.layout = dbc.Container([
                             dcc.Dropdown(
                                 id='color-field-dropdown',
                                 options=[
+                                    {'label': 'Variance', 'value': 'variance'},
+                                    {'label': 'Variance %', 'value': 'variance_pct'},
+                                    {'label': 'Actual Requests', 'value': 'actual_requests'},
+                                    {'label': 'Scheduled (Sending)', 'value': 'sending'},
                                     {'label': 'Hour Util %', 'value': 'hour_utilization_pct'},
                                     {'label': 'Net Util %', 'value': 'net_utilization_pct'},
                                     {'label': 'Allocated', 'value': 'allocated_capacity'},
                                     {'label': 'Total Cap', 'value': 'total_capacity'},
-                                    {'label': 'Sending', 'value': 'sending'},
                                 ],
-                                value='hour_utilization_pct',
+                                value='variance',
                                 className="mb-3",
                                 style={'fontSize': '0.8rem'}
                             ),
@@ -247,10 +285,11 @@ app.layout = dbc.Container([
      Output('load-complete', 'data')],
     [Input('load-btn', 'n_clicks'),
      Input('refresh-btn', 'n_clicks')],
-    State('num-ids-input', 'value')
+    [State('num-ids-input', 'value'),
+     State('sales-date-input', 'value')]
 )
-def load_data(load_clicks, refresh_clicks, num_ids):
-    """Load or refresh the dataset."""
+def load_data(load_clicks, refresh_clicks, num_ids, sales_date):
+    """Load or refresh the comparison dataset."""
     ctx = callback_context
     if not ctx.triggered:
         raise PreventUpdate
@@ -266,8 +305,31 @@ def load_data(load_clicks, refresh_clicks, num_ids):
         if num_ids is None or num_ids < 1:
             num_ids = 2
 
+        # Validate sales_date (optional)
+        sales_date_int = None
+        if sales_date:
+            try:
+                sales_date_int = int(sales_date)
+                # Basic validation: YYYYMMDD format
+                if sales_date_int < 20000101 or sales_date_int > 21000101:
+                    return (
+                        no_update,
+                        "Invalid sales_date format. Please use YYYYMMDD (e.g., 20251127)",
+                        'warning',
+                        True,
+                        datetime.now().isoformat()
+                    )
+            except ValueError:
+                return (
+                    no_update,
+                    "Invalid sales_date. Please enter a number in YYYYMMDD format",
+                    'warning',
+                    True,
+                    datetime.now().isoformat()
+                )
+
         # Get the auto_schedule_ids
-        reader = _get_reader()
+        reader = _get_scheduled_reader()
         auto_schedule_ids = get_auto_schedule_ids(reader, limit=num_ids)
 
         if not auto_schedule_ids:
@@ -279,16 +341,18 @@ def load_data(load_clicks, refresh_clicks, num_ids):
                 datetime.now().isoformat()
             )
 
-        # Load the dataset
-        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, force_refresh)
+        # Load the comparison dataset
+        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, sales_date_int, force_refresh)
 
         record_count = len(df)
         message = f"Loaded {record_count:,} records for auto_schedule_ids: {', '.join(str(id) for id in auto_schedule_ids)}"
+        if sales_date_int:
+            message += f" | Sales Date: {sales_date_int}"
         if loaded_from_cache:
             message += " (from cache)"
 
         return (
-            {'auto_schedule_ids': auto_schedule_ids, 'loaded_at': datetime.now().isoformat()},
+            {'auto_schedule_ids': auto_schedule_ids, 'sales_date': sales_date_int, 'loaded_at': datetime.now().isoformat()},
             message,
             'success',
             True,
@@ -354,10 +418,12 @@ def update_filter_options(dataset_data):
         return [[{'label': 'All', 'value': 'all'}]] * 3
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
+    sales_date = dataset_data.get('sales_date')
+    cache_key = (tuple(auto_schedule_ids), sales_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
-        if _cached_ids != auto_schedule_ids or _cached_dataset is None:
+        if _cached_ids != cache_key or _cached_dataset is None:
             return [[{'label': 'All', 'value': 'all'}]] * 3
         df = _cached_dataset.copy()
 
@@ -419,10 +485,12 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         raise PreventUpdate
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
+    sales_date = dataset_data.get('sales_date')
+    cache_key = (tuple(auto_schedule_ids), sales_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
-        if _cached_ids != auto_schedule_ids or _cached_dataset is None:
+        if _cached_ids != cache_key or _cached_dataset is None:
             raise PreventUpdate
         df = _cached_dataset.copy()
 
@@ -457,7 +525,7 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
             df = df[df['auto_schedule_id'] == id_filter]
 
     # Build the Gantt figure
-    fig = build_gantt_figure(df, color_field=color_field or 'hour_utilization_pct')
+    fig = build_gantt_figure(df, color_field=color_field or 'variance')
 
     return fig
 
