@@ -489,9 +489,9 @@ def update_filter_options(dataset_data):
         return [[{'label': 'All', 'value': 'all'}]] * 3
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    start_date = dataset_data.get('start_date')
-    end_date = dataset_data.get('end_date')
-    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
+    actual_start_date = dataset_data.get('start_date')
+    actual_end_date = dataset_data.get('end_date')
+    cache_key = (tuple(auto_schedule_ids), actual_start_date, actual_end_date)
 
     # Get the cached dataset
     with _DATASET_LOCK:
@@ -596,6 +596,15 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         selected = [value for value in selected if value in valid_sources]
         if selected:
             df = df[df['source_type'].isin(selected)]
+
+    # Apply date picker filters (only affects the visualization, not the loaded data)
+    if start_date:
+        start_dt = pd.to_datetime(start_date)
+        df = df[df['plan_datetime'] >= start_dt]
+
+    if end_date:
+        end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        df = df[df['plan_datetime'] <= end_dt]
 
     # Build the Gantt figure
     fig = build_gantt_figure(df, color_field=color_field or 'source_type')
