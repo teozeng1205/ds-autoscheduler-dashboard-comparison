@@ -155,6 +155,9 @@ class ActualSentDataReader(redshift_connector.RedshiftConnector):
 
         df = pd.DataFrame(records, columns=colnames)
         log.info("Fetched %s rows for sales_date range %s to %s", len(df), start_date, end_date)
+        if not df.empty:
+            log.info("Actual data columns: %s", df.columns.tolist())
+            log.info("Sample actual data (first 3 rows):\n%s", df.head(3))
         return df
 
 

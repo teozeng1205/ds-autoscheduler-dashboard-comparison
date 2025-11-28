@@ -310,6 +310,8 @@ class ComparisonDataLoader:
         """Process the actual sent data."""
         df = df.copy()
 
+        log.info("Processing actual data with columns: %s", df.columns.tolist())
+
         # Normalize column names to match scheduled data
         df = df.rename(columns={
             'providercode': 'provider_code',
@@ -318,6 +320,8 @@ class ComparisonDataLoader:
             'scheduletime': 'schedule_time',
             'requests': 'actual_requests'
         })
+
+        log.info("After rename, columns: %s", df.columns.tolist())
 
         # Convert date and time to datetime
         # scheduledate format: YYYYMMDD, scheduletime format: HHMM
@@ -347,6 +351,7 @@ class ComparisonDataLoader:
         df['actual_requests'] = pd.to_numeric(df['actual_requests'], errors='coerce').fillna(0)
 
         log.info("Processed actual sent dataset with %s records", len(df))
+        log.info("Sample processed actual data:\n%s", df[['provider_code', 'site_code', 'actual_datetime', 'actual_requests']].head(3))
         return df
 
     def _merge_scheduled_and_actual(self, scheduled_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
@@ -356,6 +361,9 @@ class ComparisonDataLoader:
             'actual_requests': 'sum'
         })
 
+        log.info("Aggregated actual data: %s unique combinations", len(actual_agg))
+        log.info("Sample aggregated actual:\n%s", actual_agg.head(3))
+
         # Merge with scheduled data - keep only essential columns
         essential_cols = [
             'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
@@ -363,12 +371,17 @@ class ComparisonDataLoader:
         ]
         scheduled_essential = scheduled_df[essential_cols].copy()
 
+        log.info("Scheduled data: %s records", len(scheduled_essential))
+        log.info("Sample scheduled for merge:\n%s", scheduled_essential[['provider_code', 'site_code', 'plan_datetime', 'sending']].head(3))
+
         comparison_df = scheduled_essential.merge(
             actual_agg,
             left_on=['provider_code', 'site_code', 'plan_datetime'],
             right_on=['provider_code', 'site_code', 'actual_datetime'],
             how='left'
         )
+
+        log.info("After merge: %s records, actual_requests sum: %s", len(comparison_df), comparison_df['actual_requests'].sum())
 
         # Fill missing actual_requests with 0
         comparison_df['actual_requests'] = comparison_df['actual_requests'].fillna(0)
