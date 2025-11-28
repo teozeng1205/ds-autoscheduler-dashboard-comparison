@@ -561,15 +561,6 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         except (TypeError, ValueError):
             return None
 
-    start_dt = _parse_sales_date(start_date)
-    if start_dt is not None and pd.notna(start_dt):
-        df = df[df['plan_datetime'] >= start_dt]
-
-    end_dt = _parse_sales_date(end_date)
-    if end_dt is not None and pd.notna(end_dt):
-        end_dt = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        df = df[df['plan_datetime'] <= end_dt]
-
     # Apply filters
     if provider_filter and 'all' not in provider_filter:
         if isinstance(provider_filter, list):

@@ -109,31 +109,29 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
+    color_kwargs = dict(
+        data_frame=plot_df,
+        x_start='plan_datetime',
+        x_end='end_datetime',
+        y='label',
+        color=color_field,
+        custom_data=custom_data,
+        title='Hourly Collection Plans - Provider/Site Timeline'
+    )
+
     if is_categorical and color_discrete_map:
-        fig = px.timeline(
-            plot_df,
-            x_start='plan_datetime',
-            x_end='end_datetime',
-            y='label',
-            color=color_field,
-            color_discrete_map=color_discrete_map,
-            custom_data=custom_data,
-            title='Hourly Collection Plans - Provider/Site Timeline'
-        )
-        legend_title = color_label
+        color_kwargs['color_discrete_map'] = color_discrete_map
     else:
-        color_scale = 'RdYlGn_r' if 'utilization' in color_field or 'pct' in color_field else 'Blues'
-        fig = px.timeline(
-            plot_df,
-            x_start='plan_datetime',
-            x_end='end_datetime',
-            y='label',
-            color=color_field,
-            color_continuous_scale=color_scale,
-            custom_data=custom_data,
-            title='Hourly Collection Plans - Provider/Site Timeline'
-        )
-        legend_title = color_label
+        if color_field in {'difference', 'difference_pct'}:
+            color_kwargs['color_continuous_scale'] = 'RdBu'
+            color_kwargs['color_continuous_midpoint'] = 0
+        else:
+            color_kwargs['color_continuous_scale'] = (
+                'RdYlGn_r' if 'utilization' in color_field or 'pct' in color_field else 'Blues'
+            )
+    legend_title = color_label
+
+    fig = px.timeline(**color_kwargs)
 
     # Build hover template - simplified
     hover_parts = [
