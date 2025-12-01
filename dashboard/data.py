@@ -180,18 +180,16 @@ class ComparisonDataLoader:
         scheduled_reader: HourlyCollectionPlansReader | None = None,
         actual_reader: ActualSentDataReader | None = None,
         auto_schedule_ids: Optional[List[int]] = None,
-        start_date: Optional[int] = None,
-        end_date: Optional[int] = None,
         num_ids: int = 2
     ):
         self.scheduled_reader = scheduled_reader or HourlyCollectionPlansReader()
         self.actual_reader = actual_reader or ActualSentDataReader()
         self.auto_schedule_ids = auto_schedule_ids
-        self.start_date = start_date
-        self.end_date = end_date
         self.num_ids = num_ids
         self._dataset: pd.DataFrame | None = None
         self._loaded_from_csv = False
+        self._derived_actual_start_date: int | None = None
+        self._derived_actual_end_date: int | None = None
 
     def load(self, force_refresh: bool = False) -> pd.DataFrame:
         """Return the prepared comparison dataset, optionally forcing a refresh."""
@@ -226,20 +224,28 @@ class ComparisonDataLoader:
         # Process scheduled data
         scheduled_df = self._process_scheduled_data(scheduled_df)
 
-        # Determine actual data query range. Use user-provided dates if available,
-        # otherwise infer from scheduled plan dates to align with the plan timeline.
-        actual_start_date = self.start_date
-        actual_end_date = self.end_date
-        plan_dates = scheduled_df['plan_date'].dropna()
-        if not plan_dates.empty:
-            inferred_start = int(plan_dates.min())
-            inferred_end = int(plan_dates.max())
-            if actual_start_date is None:
-                actual_start_date = inferred_start
-                log.info("Defaulting actual data start_date to plan_date min %s", actual_start_date)
-            if actual_end_date is None:
-                actual_end_date = inferred_end
-                log.info("Defaulting actual data end_date to plan_date max %s", actual_end_date)
+        # Derive the actual data query range from scheduled plan datetimes.
+        actual_start_date = None
+        actual_end_date = None
+        plan_datetimes = scheduled_df['plan_datetime'].dropna()
+        if not plan_datetimes.empty:
+            min_dt = plan_datetimes.min()
+            max_dt = plan_datetimes.max()
+            if pd.notna(min_dt):
+                actual_start_date = int(min_dt.strftime('%Y%m%d'))
+            if pd.notna(max_dt):
+                actual_end_date = int(max_dt.strftime('%Y%m%d'))
+            if actual_start_date is not None and actual_end_date is None:
+                actual_end_date = actual_start_date
+            if actual_start_date is not None:
+                log.info(
+                    "Derived actual sales date range %s to %s from scheduled plan datetimes",
+                    actual_start_date,
+                    actual_end_date,
+                )
+
+        self._derived_actual_start_date = actual_start_date
+        self._derived_actual_end_date = actual_end_date
 
         # Fetch actual sent data if we have a query range
         if actual_start_date is not None:
@@ -249,7 +255,11 @@ class ComparisonDataLoader:
                 # Merge with scheduled data
                 comparison_df = self._merge_scheduled_and_actual(scheduled_df, actual_df)
             else:
-                date_range_str = f"{self.start_date}" if self.start_date == self.end_date else f"{self.start_date} to {self.end_date}"
+                date_range_str = (
+                    f"{actual_start_date}"
+                    if actual_end_date == actual_start_date
+                    else f"{actual_start_date} to {actual_end_date}"
+                ) if actual_start_date is not None else "Unknown"
                 log.warning("No actual sent data found for sales_date range %s", date_range_str)
                 essential_cols = [
                     'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
@@ -273,6 +283,11 @@ class ComparisonDataLoader:
             comparison_df['difference_pct'] = -100.0
 
         return comparison_df
+
+    @property
+    def actual_date_range(self) -> tuple[int | None, int | None]:
+        """Return the derived sales date range used to query actual sent data."""
+        return self._derived_actual_start_date, self._derived_actual_end_date
 
     def _process_scheduled_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process and enrich the scheduled dataset."""
@@ -400,7 +415,10 @@ class ComparisonDataLoader:
 
         log.info("After merge: %s records (scheduled), actual_requests sum: %s", len(comparison_df), comparison_df['actual_requests'].sum())
 
-        comparison_df['actual_requests'] = comparison_df['actual_requests'].fillna(0)
+        comparison_df['actual_requests'] = pd.to_numeric(
+            comparison_df['actual_requests'],
+            errors='coerce'
+        ).fillna(0)
         comparison_df['source_type'] = 'Scheduled Only'
 
         # Build actual-only rows (audit entries without matching scheduled plan)
@@ -449,7 +467,10 @@ class ComparisonDataLoader:
         )
         zero_sending_mask = (comparison_df['sending'] == 0) & (comparison_df['actual_requests'] > 0)
         comparison_df.loc[zero_sending_mask, 'difference_pct'] = 100.0
-        comparison_df['difference_pct'] = comparison_df['difference_pct'].fillna(0)
+        comparison_df['difference_pct'] = pd.to_numeric(
+            comparison_df['difference_pct'],
+            errors='coerce'
+        ).fillna(0)
 
         scheduled_and_actual_mask = (comparison_df['sending'] > 0) & (comparison_df['actual_requests'] > 0)
         comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Scheduled & Actual'

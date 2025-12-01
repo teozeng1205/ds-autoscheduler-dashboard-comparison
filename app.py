@@ -16,7 +16,6 @@ from dashboard import (
     HourlyCollectionPlansReader,
     ActualSentDataReader,
     build_gantt_figure,
-    get_auto_schedule_ids,
 )
 
 root_logger = logging.getLogger()
@@ -93,6 +92,7 @@ def _is_connection_error(err: Exception) -> bool:
 _DATASET_LOCK = Lock()
 _cached_dataset = None
 _cached_ids = None
+_cached_date_range: tuple[int | None, int | None] | None = None
 
 # Prevent concurrent load actions (e.g., when the user clicks rapidly).
 _LOAD_ACTION_LOCK = Lock()
@@ -101,40 +101,41 @@ _LOAD_ACTION_LOCK = Lock()
 _NO_AUTO_SCHEDULE_MSG = "No auto_schedule_id values found in as_hourly_collection_plans"
 
 
-def _load_dataset_with_retry(auto_schedule_ids: list[int], start_date: int | None, end_date: int | None, force_refresh: bool = False):
+def _load_dataset_with_retry(auto_schedule_ids: list[int], force_refresh: bool = False):
     """Load dataset with connection retry logic."""
     try:
-        return _load_dataset(auto_schedule_ids, start_date, end_date, force_refresh)
+        return _load_dataset(auto_schedule_ids, force_refresh)
     except Exception as exc:
         if not _is_connection_error(exc):
             raise
         log.warning("Connection error; refreshing readers and retrying.")
         _reset_readers()
-        return _load_dataset(auto_schedule_ids, start_date, end_date, force_refresh)
+        return _load_dataset(auto_schedule_ids, force_refresh)
 
 
-def _load_dataset(auto_schedule_ids: list[int], start_date: int | None, end_date: int | None, force_refresh: bool = False):
+def _load_dataset(auto_schedule_ids: list[int], force_refresh: bool = False):
     """Load the comparison dataset."""
-    global _cached_dataset, _cached_ids
+    global _cached_dataset, _cached_ids, _cached_date_range
 
-    cache_key = (tuple(auto_schedule_ids), start_date, end_date)
+    cache_key = tuple(auto_schedule_ids)
 
     with _DATASET_LOCK:
         if not force_refresh and _cached_ids == cache_key and _cached_dataset is not None:
             log.info("Using cached dataset")
-            return _cached_dataset.copy(), False
+            cached_start, cached_end = (_cached_date_range if _cached_date_range is not None else (None, None))
+            return _cached_dataset.copy(), False, cached_start, cached_end
 
         loader = ComparisonDataLoader(
             scheduled_reader=_get_scheduled_reader(),
             actual_reader=_get_actual_reader(),
             auto_schedule_ids=auto_schedule_ids,
-            start_date=start_date,
-            end_date=end_date
         )
         df = loader.load(force_refresh=force_refresh)
+        actual_start_date, actual_end_date = loader.actual_date_range
         _cached_dataset = df.copy()
         _cached_ids = cache_key
-        return df, loader.loaded_from_cache
+        _cached_date_range = (actual_start_date, actual_end_date)
+        return df, loader.loaded_from_cache, actual_start_date, actual_end_date
 
 
 # Initialize Dash app
@@ -157,37 +158,14 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
             dbc.InputGroup([
-                dbc.InputGroupText("Schedule IDs:"),
+                dbc.InputGroupText("Auto Schedule ID:"),
                 dbc.Input(
-                    id='num-ids-input',
+                    id='auto-schedule-id-input',
                     type='number',
-                    value=2,
                     min=1,
                     step=1,
                     className="form-control",
-                    placeholder="Number of schedule IDs"
-                ),
-            ], size="sm", className="me-2"),
-        ], width="auto"),
-        dbc.Col([
-            dbc.InputGroup([
-                dbc.InputGroupText("Start Date:"),
-                dbc.Input(
-                    id='start-date-input',
-                    type='number',
-                    placeholder='YYYYMMDD (e.g., 20251127)',
-                    className="form-control"
-                ),
-            ], size="sm", className="me-2"),
-        ], width="auto"),
-        dbc.Col([
-            dbc.InputGroup([
-                dbc.InputGroupText("End Date:"),
-                dbc.Input(
-                    id='end-date-input',
-                    type='number',
-                    placeholder='YYYYMMDD (optional)',
-                    className="form-control"
+                    placeholder="Enter auto_schedule_id"
                 ),
             ], size="sm", className="me-2"),
         ], width="auto"),
@@ -197,9 +175,14 @@ app.layout = dbc.Container([
             html.Span(id='loading-text', className="ms-2 text-muted"),
         ], width="auto"),
         dbc.Col([
+            dbc.Button("Top 10 IDs", id='top-ids-btn', color="info", size="sm", className="me-2"),
+        ], width="auto"),
+        dbc.Col([
             dbc.Button("Hide Filters", id='toggle-filters-btn', color="secondary", size="sm"),
         ], width="auto"),
     ], className="control-bar align-items-center mb-3"),
+
+    html.Div(id='top-ids-display', className="mb-2 small text-muted"),
 
     # Status alert
     dbc.Alert(id='status-alert', is_open=False, duration=4000, className="mb-3"),
@@ -326,12 +309,10 @@ app.layout = dbc.Container([
      Output('load-complete', 'data')],
     [Input('load-btn', 'n_clicks'),
      Input('refresh-btn', 'n_clicks')],
-    [State('num-ids-input', 'value'),
-     State('start-date-input', 'value'),
-     State('end-date-input', 'value')]
+    [State('auto-schedule-id-input', 'value')]
 )
-def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
-    """Load or refresh the comparison dataset."""
+def load_data(load_clicks, refresh_clicks, auto_schedule_id):
+    """Load or refresh the comparison dataset for a single auto_schedule_id."""
     ctx = callback_context
     if not ctx.triggered:
         raise PreventUpdate
@@ -344,98 +325,62 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
 
     lock_acquired = False
     try:
-        # Validate num_ids
-        if num_ids is None or num_ids < 1:
-            num_ids = 2
+        if not auto_schedule_id:
+            return (
+                no_update,
+                "Please enter an auto_schedule_id to load data",
+                'warning',
+                True,
+                datetime.now().isoformat()
+            )
 
-        # Validate start_date and end_date (optional)
-        start_date_int = None
-        end_date_int = None
+        try:
+            auto_schedule_id_int = int(auto_schedule_id)
+        except (TypeError, ValueError):
+            return (
+                no_update,
+                "Invalid auto_schedule_id. Please enter a valid number.",
+                'warning',
+                True,
+                datetime.now().isoformat()
+            )
 
-        if start_date:
-            try:
-                start_date_int = int(start_date)
-                # Basic validation: YYYYMMDD format
-                if start_date_int < 20000101 or start_date_int > 21000101:
-                    return (
-                        no_update,
-                        "Invalid start_date format. Please use YYYYMMDD (e.g., 20251127)",
-                        'warning',
-                        True,
-                        datetime.now().isoformat()
-                    )
-            except ValueError:
-                return (
-                    no_update,
-                    "Invalid start_date. Please enter a number in YYYYMMDD format",
-                    'warning',
-                    True,
-                    datetime.now().isoformat()
-                )
-
-        if end_date:
-            try:
-                end_date_int = int(end_date)
-                # Basic validation: YYYYMMDD format
-                if end_date_int < 20000101 or end_date_int > 21000101:
-                    return (
-                        no_update,
-                        "Invalid end_date format. Please use YYYYMMDD (e.g., 20251127)",
-                        'warning',
-                        True,
-                        datetime.now().isoformat()
-                    )
-                # Validate date range
-                if start_date_int and end_date_int < start_date_int:
-                    return (
-                        no_update,
-                        "End date must be greater than or equal to start date",
-                        'warning',
-                        True,
-                        datetime.now().isoformat()
-                    )
-            except ValueError:
-                return (
-                    no_update,
-                    "Invalid end_date. Please enter a number in YYYYMMDD format",
-                    'warning',
-                    True,
-                    datetime.now().isoformat()
-                )
+        if auto_schedule_id_int < 1:
+            return (
+                no_update,
+                "auto_schedule_id must be a positive integer.",
+                'warning',
+                True,
+                datetime.now().isoformat()
+            )
 
         lock_acquired = _LOAD_ACTION_LOCK.acquire(blocking=False)
         if not lock_acquired:
             log.info("Load already in progress; ignoring extra click.")
             raise PreventUpdate
 
-        # Get the auto_schedule_ids
-        reader = _get_scheduled_reader()
-        auto_schedule_ids = get_auto_schedule_ids(reader, limit=num_ids)
-
-        if not auto_schedule_ids:
-            return (
-                no_update,
-                "No auto_schedule_ids found in database",
-                'warning',
-                True,
-                datetime.now().isoformat()
-            )
+        auto_schedule_ids = [auto_schedule_id_int]
 
         # Load the comparison dataset
-        df, loaded_from_cache = _load_dataset_with_retry(auto_schedule_ids, start_date_int, end_date_int, force_refresh)
+        df, loaded_from_cache, actual_start_date, actual_end_date = _load_dataset_with_retry(auto_schedule_ids, force_refresh)
 
         record_count = len(df)
-        message = f"Loaded {record_count:,} records for auto_schedule_ids: {', '.join(str(id) for id in auto_schedule_ids)}"
-        if start_date_int:
-            if end_date_int and end_date_int != start_date_int:
-                message += f" | Sales Date Range: {start_date_int} - {end_date_int}"
+        message = f"Loaded {record_count:,} records for auto_schedule_id: {auto_schedule_id_int}"
+        if actual_start_date:
+            if actual_end_date and actual_end_date != actual_start_date:
+                message += f" | Sales Date Range: {actual_start_date} - {actual_end_date}"
             else:
-                message += f" | Sales Date: {start_date_int}"
+                message += f" | Sales Date: {actual_start_date}"
         if loaded_from_cache:
             message += " (from cache)"
 
         return (
-            {'auto_schedule_ids': auto_schedule_ids, 'start_date': start_date_int, 'end_date': end_date_int, 'loaded_at': datetime.now().isoformat()},
+            {
+                'auto_schedule_ids': auto_schedule_ids,
+                'start_date': actual_start_date,
+                'end_date': actual_end_date,
+                'loaded_at': datetime.now().isoformat()
+            },
             message,
             'success',
             True,
@@ -459,6 +404,29 @@ def load_data(load_clicks, refresh_clicks, num_ids, start_date, end_date):
     finally:
         if lock_acquired:
             _LOAD_ACTION_LOCK.release()
+
+
+@app.callback(
+    Output('top-ids-display', 'children'),
+    Input('top-ids-btn', 'n_clicks')
+)
+def display_top_ids(n_clicks):
+    """Show the latest top N auto_schedule_ids from the scheduled plan table."""
+    if not n_clicks:
+        raise PreventUpdate
+
+    try:
+        reader = _get_scheduled_reader()
+        ids = reader.fetch_auto_schedule_ids(limit=10)
+    except Exception as exc:
+        log.error("Unable to fetch top auto_schedule_ids: %s", exc)
+        return f"Error fetching top IDs: {exc}"
+
+    if not ids:
+        return "No auto_schedule_ids available."
+
+    ids_list = ', '.join(str(value) for value in ids)
+    return f"Top 10 auto_schedule_ids: {ids_list}"
 
 
 @app.callback(
@@ -508,9 +476,7 @@ def update_filter_options(dataset_data):
         return [[{'label': 'All', 'value': 'all'}]] * 3
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    actual_start_date = dataset_data.get('start_date')
-    actual_end_date = dataset_data.get('end_date')
-    cache_key = (tuple(auto_schedule_ids), actual_start_date, actual_end_date)
+    cache_key = tuple(auto_schedule_ids)
 
     # Get the cached dataset
     with _DATASET_LOCK:
@@ -577,9 +543,7 @@ def update_gantt(dataset_data, color_field, provider_filter, site_filter, id_fil
         raise PreventUpdate
 
     auto_schedule_ids = dataset_data['auto_schedule_ids']
-    actual_start_date = dataset_data.get('start_date')
-    actual_end_date = dataset_data.get('end_date')
-    cache_key = (tuple(auto_schedule_ids), actual_start_date, actual_end_date)
+    cache_key = tuple(auto_schedule_ids)
 
     # Get the cached dataset
     with _DATASET_LOCK:

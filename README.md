@@ -47,6 +47,7 @@ The comparison helps identify differences between planned and actual provider fi
   WHERE sales_date BETWEEN <START_DATE> AND <END_DATE>
   GROUP BY 1, 2, 3, 4
   ```
+- **Range Source**: `<START_DATE>` and `<END_DATE>` are derived from the earliest and latest plan datetimes for the selected `auto_schedule_id` in `as_hourly_collection_plans`.
 
 ## Running the Dashboard
 
@@ -58,13 +59,10 @@ The dashboard will be available at: http://127.0.0.1:8051/
 
 ## Usage
 
-1. **Set Number of Schedule IDs**: Choose how many recent auto_schedule_ids to load (1-10)
-2. **Enter Sales Date Range**:
-   - **Start Date**: Input the start sales date in YYYYMMDD format (e.g., 20251127)
-   - **End Date** (optional): Input the end sales date in YYYYMMDD format
-     - If end date is omitted, only the start date will be used
-     - If no dates are provided, only scheduled data will be shown
-3. **Load Data**: Click "Load Data" to fetch both scheduled and actual data
+1. **Enter Auto Schedule ID**: Provide the `auto_schedule_id` you want to analyze—only a single ID is required.
+2. **Load Data**: Click "Load Data" to fetch the scheduled plans and automatically derived actual data.
+   - The sales date range is taken from the earliest and latest scheduled plan datetimes for that `auto_schedule_id`, so you no longer need to enter manual start/end dates.
+3. **Top 10 IDs**: Click the "Top 10 IDs" button to see a quick list of the most recent `auto_schedule_id` values in the control bar.
 4. **Refresh**: Click "Refresh" to reload from the database (bypassing cache)
 5. **Select Color Metric**: Choose which comparison metric to visualize in the Gantt chart
 6. **Apply Filters**: Use the sidebar filters to narrow down by provider, site, schedule ID, or date range
