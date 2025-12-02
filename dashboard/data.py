@@ -10,6 +10,9 @@ import pandas as pd
 
 from .db import HourlyCollectionPlansReader, ActualSentDataReader
 
+VOL_COEFFICIENT = 2.0
+PCNT_COEFFICIENT = 1.0
+
 log = logging.getLogger(__name__)
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -471,6 +474,36 @@ class ComparisonDataLoader:
             comparison_df['difference_pct'],
             errors='coerce'
         ).fillna(0)
+
+        # Build normalized difference scores
+        diff_abs = comparison_df['difference'].abs().astype(float)
+        max_diff = diff_abs.max(skipna=True)
+        if max_diff and max_diff > 0:
+            comparison_df['diff_score'] = diff_abs / max_diff
+        else:
+            comparison_df['diff_score'] = 0.0
+
+        diff_pct_abs = comparison_df['difference_pct'].abs().astype(float)
+        max_diff_pct = diff_pct_abs.max(skipna=True)
+        if max_diff_pct and max_diff_pct > 0:
+            comparison_df['diff_pcnt_score'] = diff_pct_abs / max_diff_pct
+        else:
+            comparison_df['diff_pcnt_score'] = 0.0
+
+        comparison_df['impact_score'] = (
+            VOL_COEFFICIENT * comparison_df['diff_score'] +
+            PCNT_COEFFICIENT * comparison_df['diff_pcnt_score']
+        )
+
+        label_impact = (
+            comparison_df
+            .groupby('label', dropna=False)['impact_score']
+            .max()
+            .sort_values(ascending=False)
+        )
+        if not label_impact.empty:
+            label_rank_map = {label: rank for rank, label in enumerate(label_impact.index, start=1)}
+            comparison_df['impact_rank'] = comparison_df['label'].map(label_rank_map)
 
         scheduled_and_actual_mask = (comparison_df['sending'] > 0) & (comparison_df['actual_requests'] > 0)
         comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Planned & Actual'

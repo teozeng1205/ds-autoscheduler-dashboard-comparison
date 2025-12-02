@@ -254,13 +254,14 @@ app.layout = dbc.Container([
                             dcc.Dropdown(
                                 id='color-field-dropdown',
                                 options=[
+                                    {'label': 'Impact Score (Weighted Difference)', 'value': 'impact_score'},
                                     {'label': 'Difference (Actual - Planned)', 'value': 'difference'},
                                     {'label': 'Difference %', 'value': 'difference_pct'},
                                     {'label': 'Actual Requests', 'value': 'actual_requests'},
                                     {'label': 'Planned Requests', 'value': 'sending'},
                                     {'label': 'Capacity', 'value': 'total_capacity'},
                                 ],
-                                value='difference',
+                                value='impact_score',
                                 className="mb-3",
                                 style={'fontSize': '0.8rem'}
                             ),

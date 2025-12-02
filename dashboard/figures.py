@@ -77,8 +77,23 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     else:
         plot_df[color_field] = pd.to_numeric(plot_df[color_field], errors='coerce').fillna(0)
 
-    # Sort by label and datetime
-    plot_df = plot_df.sort_values(['label', 'plan_datetime'])
+    # Sort by impact (if available) then label/time
+    label_order = None
+    if 'impact_rank' in plot_df.columns:
+        plot_df['impact_rank'] = pd.to_numeric(plot_df['impact_rank'], errors='coerce')
+        label_order = (
+            plot_df[['label', 'impact_rank']]
+            .dropna(subset=['impact_rank'])
+            .drop_duplicates()
+            .sort_values('impact_rank')
+            ['label']
+            .tolist()
+        )
+        if label_order:
+            plot_df['label'] = pd.Categorical(plot_df['label'], categories=label_order, ordered=True)
+        plot_df = plot_df.sort_values(['impact_rank', 'label', 'plan_datetime'])
+    else:
+        plot_df = plot_df.sort_values(['label', 'plan_datetime'])
 
     # Calculate dynamic height based on number of unique labels (rows)
     num_unique_labels = plot_df['label'].nunique()
@@ -105,7 +120,8 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     # Build custom data for hover - simplified metrics only
     custom_data_fields = [
         'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
-        'total_capacity', 'sending', 'actual_requests', 'difference', 'difference_pct'
+        'total_capacity', 'sending', 'actual_requests', 'difference', 'difference_pct',
+        'impact_score'
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
@@ -126,6 +142,8 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
 
     if is_categorical and color_discrete_map:
         color_kwargs['color_discrete_map'] = color_discrete_map
+    elif color_field == 'impact_score':
+        color_kwargs['color_continuous_scale'] = 'YlOrRd'
     else:
         if color_field in {'difference', 'difference_pct'}:
             color_kwargs['color_continuous_scale'] = 'RdBu'
@@ -162,6 +180,9 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
 
     if 'difference_pct' in custom_data:
         hover_parts.append(f"<b>Difference %:</b> %{{customdata[{custom_data.index('difference_pct')}]:.1f}}%<br>")
+
+    if 'impact_score' in custom_data:
+        hover_parts.append(f"<b>Impact Score:</b> %{{customdata[{custom_data.index('impact_score')}]:.2f}}<br>")
 
     if 'auto_schedule_id' in custom_data:
         hover_parts.append(f"<br>Schedule ID: %{{customdata[{custom_data.index('auto_schedule_id')}]}}<br>")
@@ -204,8 +225,12 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         marker_line_width=0.5
     )
 
-    # Reverse y-axis to show first items at top
-    fig.update_yaxes(autorange="reversed")
+    # Reverse y-axis to show first items at top and order by impact if available
+    yaxis_kwargs = dict(autorange="reversed")
+    if label_order:
+        yaxis_kwargs['categoryorder'] = 'array'
+        yaxis_kwargs['categoryarray'] = label_order
+    fig.update_yaxes(**yaxis_kwargs)
 
     # Configure x-axis with hour ticks
     min_start = plot_df['plan_datetime'].min()
