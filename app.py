@@ -261,7 +261,7 @@ app.layout = dbc.Container([
                                     {'label': 'Planned Requests', 'value': 'sending'},
                                     {'label': 'Capacity', 'value': 'total_capacity'},
                                 ],
-                                value='impact_score',
+                                value='difference',
                                 className="mb-3",
                                 style={'fontSize': '0.8rem'}
                             ),
