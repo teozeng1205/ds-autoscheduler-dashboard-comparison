@@ -138,7 +138,11 @@ class ActualSentDataReader(redshift_connector.RedshiftConnector):
             end_date = start_date
 
         query = """
-            SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
+SELECT providercode, case when sitecode = 'AA-API' THEN 'DP' ELSE sitecode END as sitecode 
+        , observationtimestamp::date AS scheduledate
+        , TO_CHAR(observationtimestamp, 'HH24') AS scheduletime
+        , count(distinct id) as requests
+        , count(distinct CASE WHEN filterreason = 'OAG' THEN id END) as oag_filtered
             FROM prod.monitoring.provider_combined_audit
             WHERE sales_date BETWEEN %s AND %s
             GROUP BY 1, 2, 3, 4
