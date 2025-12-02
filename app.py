@@ -96,6 +96,8 @@ _cached_date_range: tuple[int | None, int | None] | None = None
 
 # Prevent concurrent load actions (e.g., when the user clicks rapidly).
 _LOAD_ACTION_LOCK = Lock()
+# Prevent concurrent "Top IDs" requests from stacking when users over-click.
+_TOP_IDS_ACTION_LOCK = Lock()
 
 # Shared message for when there are no auto schedule ids in the source table.
 _NO_AUTO_SCHEDULE_MSG = "No auto_schedule_id values found in as_hourly_collection_plans"
@@ -415,12 +417,19 @@ def display_top_ids(n_clicks):
     if not n_clicks:
         raise PreventUpdate
 
+    lock_acquired = _TOP_IDS_ACTION_LOCK.acquire(blocking=False)
+    if not lock_acquired:
+        log.info("Top IDs request already in progress; ignoring extra click.")
+        raise PreventUpdate
+
     try:
         reader = _get_scheduled_reader()
         ids = reader.fetch_auto_schedule_ids(limit=10)
     except Exception as exc:
         log.error("Unable to fetch top auto_schedule_ids: %s", exc)
         return f"Error fetching top IDs: {exc}"
+    finally:
+        _TOP_IDS_ACTION_LOCK.release()
 
     if not ids:
         return "No auto_schedule_ids available."
