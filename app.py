@@ -149,12 +149,12 @@ FILTER_COLUMN_STYLE = {
 }
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-app.title = "Scheduled vs Actual Comparison Dashboard"
+app.title = "Planned vs Actual Comparison Dashboard"
 server = app.server
 
 # Build layout with filters on left
 app.layout = dbc.Container([
-    html.H1("Scheduled vs Actual Sending - Comparison Dashboard", className="mb-4"),
+    html.H1("Planned vs Actual Sending - Comparison Dashboard", className="mb-4"),
 
     # Control bar
     dbc.Row([
@@ -254,10 +254,10 @@ app.layout = dbc.Container([
                             dcc.Dropdown(
                                 id='color-field-dropdown',
                                 options=[
-                                    {'label': 'Difference (Actual - Scheduled)', 'value': 'difference'},
+                                    {'label': 'Difference (Actual - Planned)', 'value': 'difference'},
                                     {'label': 'Difference %', 'value': 'difference_pct'},
                                     {'label': 'Actual Requests', 'value': 'actual_requests'},
-                                    {'label': 'Scheduled Requests', 'value': 'sending'},
+                                    {'label': 'Planned Requests', 'value': 'sending'},
                                     {'label': 'Capacity', 'value': 'total_capacity'},
                                 ],
                                 value='difference',

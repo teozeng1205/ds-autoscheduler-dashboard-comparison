@@ -95,8 +95,8 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     if color_field == 'source_type':
         color_label = "Request Source"
         color_discrete_map = {
-            'Scheduled & Actual': '#2ca02c',
-            'Scheduled Only': '#1f77b4',
+            'Planned & Actual': '#2ca02c',
+            'Planned Only': '#1f77b4',
             'Actual Only': '#d62728',
         }
     else:
@@ -109,6 +109,11 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
+    title = (
+        "Hourly Collection Plans - Provider/Site Timeline "
+        f"(Color by: {color_label}; Actual - Planned)"
+    )
+
     color_kwargs = dict(
         data_frame=plot_df,
         x_start='plan_datetime',
@@ -116,7 +121,7 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
         y='label',
         color=color_field,
         custom_data=custom_data,
-        title='Hourly Collection Plans - Provider/Site Timeline'
+        title=title
     )
 
     if is_categorical and color_discrete_map:
@@ -146,7 +151,7 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
 
     # Requests comparison
     if 'sending' in custom_data:
-        hover_parts.append(f"<b>Scheduled Requests:</b> %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
+        hover_parts.append(f"<b>Planned Requests:</b> %{{customdata[{custom_data.index('sending')}]:,.0f}}<br>")
 
     if 'actual_requests' in custom_data:
         hover_parts.append(f"<b>Actual Requests:</b> %{{customdata[{custom_data.index('actual_requests')}]:,.0f}}<br>")

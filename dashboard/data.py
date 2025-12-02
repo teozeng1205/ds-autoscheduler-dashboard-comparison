@@ -266,7 +266,7 @@ class ComparisonDataLoader:
                     'plan_datetime', 'label', 'total_capacity', 'sending'
                 ]
                 comparison_df = scheduled_df[essential_cols].copy()
-                comparison_df['source_type'] = 'Scheduled Only'
+                comparison_df['source_type'] = 'Planned Only'
                 comparison_df['actual_requests'] = 0
                 comparison_df['difference'] = -comparison_df['sending']
                 comparison_df['difference_pct'] = -100.0
@@ -277,7 +277,7 @@ class ComparisonDataLoader:
                 'plan_datetime', 'label', 'total_capacity', 'sending'
             ]
             comparison_df = scheduled_df[essential_cols].copy()
-            comparison_df['source_type'] = 'Scheduled Only'
+            comparison_df['source_type'] = 'Planned Only'
             comparison_df['actual_requests'] = 0
             comparison_df['difference'] = -comparison_df['sending']  # All scheduled, none sent
             comparison_df['difference_pct'] = -100.0
@@ -419,7 +419,7 @@ class ComparisonDataLoader:
             comparison_df['actual_requests'],
             errors='coerce'
         ).fillna(0)
-        comparison_df['source_type'] = 'Scheduled Only'
+        comparison_df['source_type'] = 'Planned Only'
 
         # Build actual-only rows (audit entries without matching scheduled plan)
         scheduled_keys = {
@@ -473,7 +473,7 @@ class ComparisonDataLoader:
         ).fillna(0)
 
         scheduled_and_actual_mask = (comparison_df['sending'] > 0) & (comparison_df['actual_requests'] > 0)
-        comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Scheduled & Actual'
+        comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Planned & Actual'
 
         log.info("Created comparison dataset with %s records", len(comparison_df))
         return comparison_df
