@@ -443,7 +443,7 @@ class ComparisonDataLoader:
             actual_only_df['plan_hour'] = actual_only_df['plan_datetime'].dt.hour.astype('Int64')
             actual_only_df['label'] = (
                 actual_only_df['provider_code'].astype(str) + ' | ' +
-                actual_only_df['site_code'].astype(str) + ' (Actual Only)'
+                actual_only_df['site_code'].astype(str)
             )
             for col in ['total_capacity', 'sending']:
                 actual_only_df[col] = 0
