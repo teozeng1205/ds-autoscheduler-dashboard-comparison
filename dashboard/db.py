@@ -138,19 +138,101 @@ class ActualSentDataReader(redshift_connector.RedshiftConnector):
             end_date = start_date
 
         query = """
-SELECT providercode, case when sitecode = 'AA-API' THEN 'DP' ELSE sitecode END as sitecode 
-        , observationtimestamp::date AS scheduledate
-        , TO_CHAR(observationtimestamp, 'HH24') AS scheduletime
-        , count(distinct id) as requests
-        , count(distinct CASE WHEN filterreason = 'OAG' THEN id END) as oag_filtered
+            SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
             FROM prod.monitoring.provider_combined_audit
             WHERE sales_date BETWEEN %s AND %s
             GROUP BY 1, 2, 3, 4
         """
 
+        query = """
+WITH obs AS (
+    SELECT
+        providercode AS provider,
+        CASE WHEN sitecode = 'AA-API' THEN 'DP'
+             ELSE sitecode
+        END AS site,
+        observationtimestamp::date AS date,
+        EXTRACT(HOUR FROM observationtimestamp)::int AS hour,
+        COUNT(DISTINCT id) AS obs_requests,
+        COUNT(DISTINCT CASE WHEN filterreason = 'OAG' THEN id END)
+            AS oag_filtered_requests
+    FROM prod.monitoring.provider_combined_audit
+    WHERE sales_date BETWEEN %s AND %s
+      AND observationtimestamp IS NOT NULL
+    GROUP BY
+        providercode,
+        CASE WHEN sitecode = 'AA-API' THEN 'DP'
+             ELSE sitecode
+        END,
+        observationtimestamp::date,
+        EXTRACT(HOUR FROM observationtimestamp)::int
+),
+
+resp AS (
+    SELECT
+        providercode AS provider,
+        CASE WHEN sitecode = 'AA-API' THEN 'DP'
+             ELSE sitecode
+        END AS site,
+        response_timestamp::date AS date,
+        EXTRACT(HOUR FROM response_timestamp)::int AS hour,
+        COUNT(DISTINCT id) AS resp_requests
+    FROM prod.monitoring.provider_combined_audit
+    WHERE sales_date BETWEEN %s AND %s
+      AND response_timestamp IS NOT NULL
+    GROUP BY
+        providercode,
+        CASE WHEN sitecode = 'AA-API' THEN 'DP'
+             ELSE sitecode
+        END,
+        response_timestamp::date,
+        EXTRACT(HOUR FROM response_timestamp)::int
+),
+
+base AS (
+    SELECT provider, site, date, hour FROM obs
+    UNION ALL
+    SELECT provider, site, date, hour FROM resp
+),
+
+unq_base AS (
+    SELECT DISTINCT
+        provider,
+        site,
+        date,
+        hour
+    FROM base
+)
+
+SELECT
+    b.provider,
+    b.site,
+    TO_CHAR(b.date, 'YYYYMMDD') AS date,
+    LPAD(b.hour::text, 2, '0')  AS hour,
+    COALESCE(o.obs_requests, 0)          AS total_requests,
+    COALESCE(o.oag_filtered_requests, 0) AS oag_filtered_requests,
+    COALESCE(r.resp_requests, 0)         AS responses
+FROM unq_base b
+LEFT JOIN obs o
+       ON  b.provider = o.provider
+       AND b.site     = o.site
+       AND b.date     = o.date
+       AND b.hour     = o.hour
+LEFT JOIN resp r
+       ON  b.provider = r.provider
+       AND b.site     = r.site
+       AND b.date     = r.date
+       AND b.hour     = r.hour
+ORDER BY
+    b.provider,
+    b.site,
+    b.date,
+    b.hour
+"""
+
         try:
             with self.get_connection().cursor() as cursor:
-                cursor.execute(query, (start_date, end_date))
+                cursor.execute(query, (start_date, end_date, start_date, end_date))
                 colnames = [desc[0] for desc in cursor.description]
                 records = cursor.fetchall()
         except Exception as e:

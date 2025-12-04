@@ -120,8 +120,8 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
     # Build custom data for hover - simplified metrics only
     custom_data_fields = [
         'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
-        'total_capacity', 'sending', 'actual_requests', 'difference', 'difference_pct',
-        'impact_score'
+        'total_capacity', 'sending', 'actual_requests', 'response_requests',
+        'oag_filtered_requests', 'difference', 'difference_pct', 'impact_score'
     ]
     custom_data = [col for col in custom_data_fields if col in plot_df.columns]
 
@@ -173,6 +173,12 @@ def build_gantt_figure(df: pd.DataFrame, color_field: str = 'hour_utilization_pc
 
     if 'actual_requests' in custom_data:
         hover_parts.append(f"<b>Actual Requests:</b> %{{customdata[{custom_data.index('actual_requests')}]:,.0f}}<br>")
+
+    if 'response_requests' in custom_data:
+        hover_parts.append(f"<b>Responses:</b> %{{customdata[{custom_data.index('response_requests')}]:,.0f}}<br>")
+
+    if 'oag_filtered_requests' in custom_data:
+        hover_parts.append(f"<b>OAG Filtered:</b> %{{customdata[{custom_data.index('oag_filtered_requests')}]:,.0f}}<br>")
 
     # Difference
     if 'difference' in custom_data:

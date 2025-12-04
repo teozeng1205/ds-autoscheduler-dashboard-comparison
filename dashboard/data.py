@@ -55,6 +55,40 @@ def _persist_dataset(df: pd.DataFrame, auto_schedule_ids: List[int]) -> None:
         log.warning("Unable to persist dataset cache to %s: %s", cache_path, exc)
 
 
+def _comparison_cache_path_for_ids(auto_schedule_ids: List[int]) -> Path:
+    """Generate cache filename for comparison datasets."""
+    ids_str = '_'.join(str(id) for id in sorted(auto_schedule_ids))
+    return _CACHE_DIR / f"comparison_{ids_str}.csv"
+
+
+def _load_cached_comparison_dataset(auto_schedule_ids: List[int]) -> Optional[pd.DataFrame]:
+    """Load cached comparison dataset if it exists."""
+    cache_path = _comparison_cache_path_for_ids(auto_schedule_ids)
+    if not cache_path.exists():
+        return None
+    try:
+        df = pd.read_csv(cache_path)
+        if 'plan_date' in df.columns:
+            df['plan_date'] = pd.to_numeric(df['plan_date'], errors='coerce').astype('Int64')
+        if 'plan_datetime' in df.columns:
+            df['plan_datetime'] = pd.to_datetime(df['plan_datetime'], errors='coerce')
+        return df
+    except Exception as exc:
+        log.warning("Unable to load cached comparison dataset %s (%s).", cache_path, exc)
+        return None
+
+
+def _persist_comparison_dataset(df: pd.DataFrame, auto_schedule_ids: List[int]) -> None:
+    """Persist comparison dataset to cache."""
+    cache_path = _comparison_cache_path_for_ids(auto_schedule_ids)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        df.to_csv(cache_path, index=False)
+        log.info("Cached comparison dataset to %s", cache_path)
+    except Exception as exc:
+        log.warning("Unable to persist comparison dataset cache to %s: %s", cache_path, exc)
+
+
 def get_auto_schedule_ids(reader: Optional[HourlyCollectionPlansReader] = None, limit: int = 10) -> List[int]:
     """Get the most recent auto_schedule_id values."""
     if reader is None:
@@ -219,6 +253,18 @@ class ComparisonDataLoader:
         if not self.auto_schedule_ids:
             raise RuntimeError("No auto_schedule_ids available")
 
+        self._loaded_from_csv = False
+        if not force_refresh:
+            cached_df = _load_cached_comparison_dataset(self.auto_schedule_ids)
+            if cached_df is not None:
+                log.info(
+                    "Loaded comparison dataset from cache for auto_schedule_ids %s",
+                    self.auto_schedule_ids
+                )
+                self._loaded_from_csv = True
+                self._update_actual_range_from_dataframe(cached_df)
+                return cached_df
+
         # Fetch scheduled data
         scheduled_df = self.scheduled_reader.fetch_hourly_collection_plans(self.auto_schedule_ids)
         if scheduled_df.empty:
@@ -271,6 +317,9 @@ class ComparisonDataLoader:
                 comparison_df = scheduled_df[essential_cols].copy()
                 comparison_df['source_type'] = 'Planned Only'
                 comparison_df['actual_requests'] = 0
+                comparison_df['observed_requests'] = 0
+                comparison_df['oag_filtered_requests'] = 0
+                comparison_df['response_requests'] = 0
                 comparison_df['difference'] = -comparison_df['sending']
                 comparison_df['difference_pct'] = -100.0
         else:
@@ -282,6 +331,9 @@ class ComparisonDataLoader:
             comparison_df = scheduled_df[essential_cols].copy()
             comparison_df['source_type'] = 'Planned Only'
             comparison_df['actual_requests'] = 0
+            comparison_df['observed_requests'] = 0
+            comparison_df['oag_filtered_requests'] = 0
+            comparison_df['response_requests'] = 0
             comparison_df['difference'] = -comparison_df['sending']  # All scheduled, none sent
             comparison_df['difference_pct'] = -100.0
 
@@ -347,24 +399,22 @@ class ComparisonDataLoader:
 
         log.info("Processing actual data with columns: %s", df.columns.tolist())
 
-        # Normalize column names to match scheduled data
+        # Normalize column names from the new query
         df = df.rename(columns={
-            'providercode': 'provider_code',
-            'sitecode': 'site_code',
-            'scheduledate': 'schedule_date',
-            'scheduletime': 'schedule_time',
-            'requests': 'actual_requests'
+            'provider': 'provider_code',
+            'site': 'site_code',
+            'date': 'schedule_date',
+            'hour': 'schedule_hour',
+            'total_requests': 'observed_requests',
+            'oag_filtered_requests': 'oag_filtered_requests',
+            'responses': 'response_requests'
         })
 
         log.info("After rename, columns: %s", df.columns.tolist())
 
-        # Convert date and time to datetime
-        # scheduledate format: YYYYMMDD, scheduletime format: HHMM
+        # Convert date/hour to numeric forms (schedule_date already YYYYMMDD, hour is HH)
         df['schedule_date'] = pd.to_numeric(df['schedule_date'], errors='coerce').astype('Int64')
-        df['schedule_time'] = pd.to_numeric(df['schedule_time'], errors='coerce').fillna(0).astype(int)
-
-        # Extract hour from schedule_time (HHMM format)
-        df['schedule_hour'] = (df['schedule_time'] // 100).astype(int)
+        df['schedule_hour'] = pd.to_numeric(df['schedule_hour'], errors='coerce').fillna(0).astype(int)
 
         # Build datetime
         df['_datetime_str'] = (
@@ -382,19 +432,33 @@ class ComparisonDataLoader:
         # Drop rows where datetime conversion failed
         df = df.dropna(subset=['actual_datetime'])
 
-        # Ensure actual_requests is numeric
-        df['actual_requests'] = pd.to_numeric(df['actual_requests'], errors='coerce').fillna(0)
+        # Ensure numeric metrics
+        metric_columns = ['observed_requests', 'oag_filtered_requests', 'response_requests']
+        for col in metric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # observed_requests represents what was actually sent
+        df['actual_requests'] = df['observed_requests']
 
         log.info("Processed actual sent dataset with %s records", len(df))
-        log.info("Sample processed actual data:\n%s", df[['provider_code', 'site_code', 'actual_datetime', 'actual_requests']].head(3))
+        sample_cols = ['provider_code', 'site_code', 'actual_datetime', 'actual_requests', 'oag_filtered_requests', 'response_requests']
+        available_sample_cols = [col for col in sample_cols if col in df.columns]
+        log.info("Sample processed actual data:\n%s", df[available_sample_cols].head(3))
         return df
 
     def _merge_scheduled_and_actual(self, scheduled_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
         """Merge scheduled and actual data to create comparison dataset."""
         # Aggregate actual data by provider, site, and hour
-        actual_agg = actual_df.groupby(['provider_code', 'site_code', 'actual_datetime'], as_index=False).agg({
-            'actual_requests': 'sum'
-        })
+        agg_map = {'actual_requests': 'sum'}
+        for extra_col in ['observed_requests', 'oag_filtered_requests', 'response_requests']:
+            if extra_col in actual_df.columns:
+                agg_map[extra_col] = 'sum'
+
+        actual_agg = actual_df.groupby(
+            ['provider_code', 'site_code', 'actual_datetime'],
+            as_index=False
+        ).agg(agg_map)
 
         log.info("Aggregated actual data: %s unique combinations", len(actual_agg))
         log.info("Sample aggregated actual:\n%s", actual_agg.head(3))
@@ -418,10 +482,13 @@ class ComparisonDataLoader:
 
         log.info("After merge: %s records (scheduled), actual_requests sum: %s", len(comparison_df), comparison_df['actual_requests'].sum())
 
-        comparison_df['actual_requests'] = pd.to_numeric(
-            comparison_df['actual_requests'],
-            errors='coerce'
-        ).fillna(0)
+        fill_columns = ['actual_requests', 'observed_requests', 'oag_filtered_requests', 'response_requests']
+        for col in fill_columns:
+            if col in comparison_df.columns:
+                comparison_df[col] = pd.to_numeric(
+                    comparison_df[col],
+                    errors='coerce'
+                ).fillna(0)
         comparison_df['source_type'] = 'Planned Only'
 
         # Build actual-only rows (audit entries without matching scheduled plan)
@@ -451,12 +518,18 @@ class ComparisonDataLoader:
             for col in ['total_capacity', 'sending']:
                 actual_only_df[col] = 0
             actual_only_df['source_type'] = 'Actual Only'
+            concat_columns = [
+                'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
+                'plan_datetime', 'label', 'total_capacity', 'sending',
+                'actual_requests'
+            ]
+            for extra_col in ['observed_requests', 'oag_filtered_requests', 'response_requests']:
+                if extra_col in actual_only_df.columns:
+                    concat_columns.append(extra_col)
+            concat_columns.append('source_type')
+
             comparison_df = pd.concat(
-                [comparison_df, actual_only_df[[
-                    'auto_schedule_id', 'provider_code', 'site_code', 'plan_date', 'plan_hour',
-                    'plan_datetime', 'label', 'total_capacity', 'sending',
-                    'actual_requests', 'source_type'
-                ]]],
+                [comparison_df, actual_only_df[concat_columns]],
                 ignore_index=True,
                 sort=False
             )
@@ -508,8 +581,27 @@ class ComparisonDataLoader:
         scheduled_and_actual_mask = (comparison_df['sending'] > 0) & (comparison_df['actual_requests'] > 0)
         comparison_df.loc[scheduled_and_actual_mask, 'source_type'] = 'Planned & Actual'
 
+        _persist_comparison_dataset(comparison_df, self.auto_schedule_ids)
+        self._update_actual_range_from_dataframe(comparison_df)
+
         log.info("Created comparison dataset with %s records", len(comparison_df))
         return comparison_df
+
+    def _update_actual_range_from_dataframe(self, df: pd.DataFrame) -> None:
+        """Derive actual date range metadata from plan datetimes."""
+        if 'plan_datetime' not in df.columns:
+            self._derived_actual_start_date = None
+            self._derived_actual_end_date = None
+            return
+        plan_datetimes = pd.to_datetime(df['plan_datetime'], errors='coerce').dropna()
+        if plan_datetimes.empty:
+            self._derived_actual_start_date = None
+            self._derived_actual_end_date = None
+            return
+        min_dt = plan_datetimes.min()
+        max_dt = plan_datetimes.max()
+        self._derived_actual_start_date = int(min_dt.strftime('%Y%m%d')) if pd.notna(min_dt) else None
+        self._derived_actual_end_date = int(max_dt.strftime('%Y%m%d')) if pd.notna(max_dt) else None
 
 
 __all__ = ["DataLoader", "ComparisonDataLoader", "get_auto_schedule_ids"]

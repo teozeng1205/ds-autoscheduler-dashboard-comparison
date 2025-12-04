@@ -16,6 +16,8 @@ The comparison helps identify differences between planned and actual provider fi
   - **Capacity**: Total capacity available
   - **Scheduled Requests**: Number of requests we planned to send
   - **Actual Requests**: Number of requests actually sent
+  - **Responses**: Unique provider responses captured in the audit logs
+  - **OAG Filtered**: Requests filtered out due to OAG rules
   - **Difference**: Actual - Scheduled (positive = sent more than planned, negative = sent less)
   - **Difference %**: Percentage difference relative to scheduled
 
@@ -42,10 +44,77 @@ The comparison helps identify differences between planned and actual provider fi
 - **Table**: `prod.monitoring.provider_combined_audit`
 - **Query**:
   ```sql
-  SELECT providercode, sitecode, scheduledate, scheduletime, count(*) as requests
-  FROM prod.monitoring.provider_combined_audit
-  WHERE sales_date BETWEEN <START_DATE> AND <END_DATE>
-  GROUP BY 1, 2, 3, 4
+  WITH obs AS (
+      SELECT
+          providercode AS provider,
+          CASE WHEN sitecode = 'AA-API' THEN 'DP'
+               ELSE sitecode
+          END AS site,
+          observationtimestamp::date AS date,
+          EXTRACT(HOUR FROM observationtimestamp)::int AS hour,
+          COUNT(DISTINCT id) AS obs_requests,
+          COUNT(DISTINCT CASE WHEN filterreason = 'OAG' THEN id END)
+              AS oag_filtered_requests
+      FROM prod.monitoring.provider_combined_audit
+      WHERE sales_date BETWEEN <START_DATE> AND <END_DATE>
+        AND observationtimestamp IS NOT NULL
+      GROUP BY 1, 2, 3, 4
+  ),
+
+  resp AS (
+      SELECT
+          providercode AS provider,
+          CASE WHEN sitecode = 'AA-API' THEN 'DP'
+               ELSE sitecode
+          END AS site,
+          response_timestamp::date AS date,
+          EXTRACT(HOUR FROM response_timestamp)::int AS hour,
+          COUNT(DISTINCT id) AS resp_requests
+      FROM prod.monitoring.provider_combined_audit
+      WHERE sales_date BETWEEN <START_DATE> AND <END_DATE>
+        AND response_timestamp IS NOT NULL
+      GROUP BY 1, 2, 3, 4
+  ),
+
+  base AS (
+      SELECT provider, site, date, hour FROM obs
+      UNION ALL
+      SELECT provider, site, date, hour FROM resp
+  ),
+
+  unq_base AS (
+      SELECT DISTINCT
+          provider,
+          site,
+          date,
+          hour
+      FROM base
+  )
+
+  SELECT
+      b.provider,
+      b.site,
+      TO_CHAR(b.date, 'YYYYMMDD') AS date,
+      LPAD(b.hour::text, 2, '0')  AS hour,
+      COALESCE(o.obs_requests, 0)          AS total_requests,
+      COALESCE(o.oag_filtered_requests, 0) AS oag_filtered_requests,
+      COALESCE(r.resp_requests, 0)         AS responses
+  FROM unq_base b
+  LEFT JOIN obs o
+         ON  b.provider = o.provider
+         AND b.site     = o.site
+         AND b.date     = o.date
+         AND b.hour     = o.hour
+  LEFT JOIN resp r
+         ON  b.provider = r.provider
+         AND b.site     = r.site
+         AND b.date     = r.date
+         AND b.hour     = r.hour
+  ORDER BY
+      b.provider,
+      b.site,
+      b.date,
+      b.hour;
   ```
 - **Range Source**: `<START_DATE>` and `<END_DATE>` are derived from the earliest and latest plan datetimes for the selected `auto_schedule_id` in `as_hourly_collection_plans`.
 
@@ -76,6 +145,8 @@ When hovering over bars in the Gantt chart, you'll see:
 - **Capacity**: Total capacity available
 - **Scheduled Requests**: Number of requests planned to be sent
 - **Actual Requests**: Number of requests actually sent
+- **Responses**: Unique responses from providers
+- **OAG Filtered**: Requests filtered out due to OAG rules
 - **Difference**: Actual - Scheduled
 - **Difference %**: Percentage difference
 
